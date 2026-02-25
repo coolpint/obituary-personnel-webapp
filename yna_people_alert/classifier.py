@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
 from typing import Iterable, List, Sequence, Set
 
 from .outlet_dictionary import normalize_name
+from .text_utils import strip_leading_byline
 
 
 APPOINTMENT_KEYWORDS = {
@@ -58,24 +58,6 @@ def _find_keywords(text: str, keywords: Iterable[str]) -> List[str]:
     return sorted(set(found))
 
 
-BYLINE_PATTERNS = [
-    # (서울=연합뉴스), (부산=뉴시스), (도쿄=연합뉴스) 등 지역/매체가 바뀌는 바이라인
-    re.compile(r"^\s*\([^)]*=[^)]+\)\s*[^=\n]{1,40}?(?:기자|특파원|논설위원)\s*=\s*"),
-    # 홍길동 기자 = ...
-    re.compile(r"^\s*[^=\n]{1,30}?(?:기자|특파원|논설위원)\s*=\s*"),
-]
-
-
-def _strip_leading_byline(text: str) -> str:
-    lines = []
-    for line in text.splitlines():
-        cleaned = line.strip()
-        for pattern in BYLINE_PATTERNS:
-            cleaned = pattern.sub("", cleaned)
-        lines.append(cleaned)
-    return "\n".join(lines).strip()
-
-
 def classify_category(text: str) -> tuple[str, List[str]]:
     appointment_hits = _find_keywords(text, APPOINTMENT_KEYWORDS)
     obituary_hits = _find_keywords(text, OBITUARY_KEYWORDS)
@@ -92,7 +74,7 @@ def classify_category(text: str) -> tuple[str, List[str]]:
 
 
 def classify_item(text: str, outlets: Sequence[str] | Set[str], threshold: int) -> ClassificationResult:
-    cleaned_text = _strip_leading_byline(text)
+    cleaned_text = strip_leading_byline(text)
 
     category, category_hits = classify_category(cleaned_text)
     role_hits = _find_keywords(cleaned_text, MEDIA_ROLE_KEYWORDS)

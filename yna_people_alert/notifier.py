@@ -1,20 +1,37 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import re
 
 import requests
 
 from .classifier import ClassificationResult
 from .rss_fetcher import RSSItem
+from .text_utils import clean_rss_text
 
 
-def build_alert_message(item: RSSItem, result: ClassificationResult) -> str:
+def _truncate_text(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 1].rstrip() + "…"
+
+
+def build_alert_message(
+    item: RSSItem,
+    result: ClassificationResult,
+    include_summary: bool = True,
+    summary_max_chars: int = 1200,
+) -> str:
     tags = [result.category]
     if result.is_media_related:
         tags.append("언론인")
     tag_text = "][".join(tags)
 
+    summary = clean_rss_text(item.summary)
+
     details = []
+    if include_summary and summary:
+        details.append(f"내용: {_truncate_text(summary, summary_max_chars)}")
     if result.matched_roles:
         details.append(f"직군: {', '.join(result.matched_roles)}")
     if result.matched_outlets:
@@ -24,8 +41,10 @@ def build_alert_message(item: RSSItem, result: ClassificationResult) -> str:
     if detail_text:
         detail_text = f"\n{detail_text}"
 
+    clean_title = re.sub(r"^\[(?:인사|부고)\]\s*", "", item.title).strip()
+
     return (
-        f"[{tag_text}] {item.title}\n"
+        f"[{tag_text}] {clean_title}\n"
         f"시간: {item.published_at}\n"
         f"링크: {item.link}{detail_text}"
     )

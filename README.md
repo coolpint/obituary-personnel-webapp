@@ -45,6 +45,8 @@ python3 -m yna_people_alert.main
 - `OUTLET_CACHE_PATH`: 언론사 캐시 JSON, 기본 `./data/outlets_cache.json`
 - `SLACK_WEBHOOK_URL`: 설정 시 슬랙 알림 사용(알림 우선순위 1순위)
 - `SLACK_MENTION`: 선택. 예) `@channel`, `<!subteam^S12345|editors>`
+- `INCLUDE_SUMMARY_IN_ALERT`: 알림에 RSS 설명문 포함 여부, 기본 `true`
+- `ALERT_SUMMARY_MAX_CHARS`: 설명문 최대 길이, 기본 `1200`
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`: 슬랙 미설정 시 텔레그램 알림 사용
 
 ## Project Structure

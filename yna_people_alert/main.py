@@ -70,7 +70,12 @@ def run_once(settings: Settings, store: Store, outlet_dict: OutletDictionary, no
         if store.is_alerted(item_id, notifier.channel_name):
             continue
 
-        message = build_alert_message(item, result)
+        message = build_alert_message(
+            item,
+            result,
+            include_summary=settings.include_summary_in_alert,
+            summary_max_chars=settings.alert_summary_max_chars,
+        )
         try:
             notifier.send(message)
             store.mark_alert(item_id, notifier.channel_name, "sent")
