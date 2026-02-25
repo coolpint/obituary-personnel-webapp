@@ -1,0 +1,54 @@
+name: YNA People Alert
+
+on:
+  schedule:
+    # KST 09:00
+    - cron: "0 0 * * *"
+    # KST 18:00
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+
+jobs:
+  run-alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RSS_URL: https://www.yna.co.kr/rss/people.xml
+      OFFICE_LIST_URL: https://news.naver.com/main/officeList.naver
+      DAUM_CPLIST_URL: https://news.daum.net/cplist
+      MEDIA_SCORE_THRESHOLD: ${{ vars.MEDIA_SCORE_THRESHOLD || '5' }}
+      REQUEST_TIMEOUT_SECONDS: ${{ vars.REQUEST_TIMEOUT_SECONDS || '15' }}
+      OUTLET_REFRESH_HOURS: "12"
+      DB_PATH: ./data/yna_people_alert.db
+      OUTLET_CACHE_PATH: ./data/outlets_cache.json
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+      SLACK_MENTION: ${{ vars.SLACK_MENTION || '' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore state cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: yna-people-alert-data-${{ github.run_id }}
+          restore-keys: |
+            yna-people-alert-data-
+
+      - name: Run once
+        run: python -m yna_people_alert.main --once
+
+      - name: Save state cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: yna-people-alert-data-${{ github.run_id }}
