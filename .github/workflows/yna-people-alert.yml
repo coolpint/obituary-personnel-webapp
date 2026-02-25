@@ -2,8 +2,8 @@ name: YNA People Alert
 
 on:
   schedule:
-    # KST 09:00
-    - cron: "0 0 * * *"
+    # KST 10:00
+    - cron: "0 1 * * *"
     # KST 18:00
     - cron: "0 9 * * *"
   workflow_dispatch:
@@ -18,6 +18,8 @@ jobs:
       DAUM_CPLIST_URL: https://news.daum.net/cplist
       MEDIA_SCORE_THRESHOLD: ${{ vars.MEDIA_SCORE_THRESHOLD || '5' }}
       REQUEST_TIMEOUT_SECONDS: ${{ vars.REQUEST_TIMEOUT_SECONDS || '15' }}
+      INCLUDE_SUMMARY_IN_ALERT: ${{ vars.INCLUDE_SUMMARY_IN_ALERT || 'true' }}
+      ALERT_SUMMARY_MAX_CHARS: ${{ vars.ALERT_SUMMARY_MAX_CHARS || '500' }}
       OUTLET_REFRESH_HOURS: "12"
       DB_PATH: ./data/yna_people_alert.db
       OUTLET_CACHE_PATH: ./data/outlets_cache.json

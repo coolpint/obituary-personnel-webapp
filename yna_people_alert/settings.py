@@ -19,7 +19,7 @@ class Settings:
     slack_webhook_url: str | None = None
     slack_mention: str | None = None
     include_summary_in_alert: bool = True
-    alert_summary_max_chars: int = 1200
+    alert_summary_max_chars: int = 500
     telegram_bot_token: str | None = None
     telegram_chat_id: str | None = None
 
@@ -48,7 +48,7 @@ class Settings:
             include_summary_in_alert=(
                 os.getenv("INCLUDE_SUMMARY_IN_ALERT", "true").strip().lower() == "true"
             ),
-            alert_summary_max_chars=int(os.getenv("ALERT_SUMMARY_MAX_CHARS", "1200")),
+            alert_summary_max_chars=int(os.getenv("ALERT_SUMMARY_MAX_CHARS", "500")),
             telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN") or None,
             telegram_chat_id=os.getenv("TELEGRAM_CHAT_ID") or None,
         )

@@ -20,7 +20,7 @@ def build_alert_message(
     item: RSSItem,
     result: ClassificationResult,
     include_summary: bool = True,
-    summary_max_chars: int = 1200,
+    summary_max_chars: int = 500,
 ) -> str:
     tags = [result.category]
     if result.is_media_related:

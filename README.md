@@ -46,7 +46,7 @@ python3 -m yna_people_alert.main
 - `SLACK_WEBHOOK_URL`: 설정 시 슬랙 알림 사용(알림 우선순위 1순위)
 - `SLACK_MENTION`: 선택. 예) `@channel`, `<!subteam^S12345|editors>`
 - `INCLUDE_SUMMARY_IN_ALERT`: 알림에 RSS 설명문 포함 여부, 기본 `true`
-- `ALERT_SUMMARY_MAX_CHARS`: 설명문 최대 길이, 기본 `1200`
+- `ALERT_SUMMARY_MAX_CHARS`: 설명문 최대 길이, 기본 `500`
 - `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`: 슬랙 미설정 시 텔레그램 알림 사용
 
 ## Project Structure
@@ -72,14 +72,14 @@ yna_people_alert/
 
 워크플로 파일은 [yna-people-alert.yml](/Users/air/codes/orbituary/.github/workflows/yna-people-alert.yml)에 포함되어 있습니다.
 
-- 실행 시각(한국시간 KST): 매일 오전 9시, 오후 6시
-- cron 기준(UTC): `00:00`, `09:00`
+- 실행 시각(한국시간 KST): 매일 오전 10시, 오후 6시
+- cron 기준(UTC): `01:00`, `09:00`
 - 각 실행은 `--once`로 1회 처리 후 종료
 
 리포지토리에 아래 값을 설정하세요.
 
 - GitHub Secrets: `SLACK_WEBHOOK_URL` (필수: 슬랙 알림)
-- GitHub Variables: `MEDIA_SCORE_THRESHOLD` (선택), `REQUEST_TIMEOUT_SECONDS` (선택), `SLACK_MENTION` (선택)
+- GitHub Variables: `MEDIA_SCORE_THRESHOLD` (선택), `REQUEST_TIMEOUT_SECONDS` (선택), `SLACK_MENTION` (선택), `INCLUDE_SUMMARY_IN_ALERT` (선택), `ALERT_SUMMARY_MAX_CHARS` (선택)
 
 ## Scoring (MVP)
 
