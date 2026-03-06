@@ -2,10 +2,10 @@ name: YNA People Alert
 
 on:
   schedule:
-    # KST 10:00
-    - cron: "0 1 * * *"
-    # KST 18:00
-    - cron: "0 9 * * *"
+    # KST 10:07
+    - cron: "7 1 * * *"
+    # KST 18:07
+    - cron: "7 9 * * *"
   workflow_dispatch:
 
 jobs:

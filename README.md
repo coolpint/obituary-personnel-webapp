@@ -72,8 +72,8 @@ yna_people_alert/
 
 워크플로 파일은 [yna-people-alert.yml](/Users/air/codes/orbituary/.github/workflows/yna-people-alert.yml)에 포함되어 있습니다.
 
-- 실행 시각(한국시간 KST): 매일 오전 10시, 오후 6시
-- cron 기준(UTC): `01:00`, `09:00`
+- 실행 시각(한국시간 KST): 매일 오전 10시 7분, 오후 6시 7분
+- cron 기준(UTC): `01:07`, `09:07`
 - 각 실행은 `--once`로 1회 처리 후 종료
 
 리포지토리에 아래 값을 설정하세요.
