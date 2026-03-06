@@ -123,6 +123,10 @@ def classify_item(text: str, outlets: Sequence[str] | Set[str], threshold: int) 
         score += 2
 
     is_media_related = score >= threshold
+    # For people-obituary/personnel feeds, outlet mention itself is a strong media signal.
+    if category in {"인사", "부고"} and outlet_hits:
+        is_media_related = True
+        score = max(score, threshold)
 
     return ClassificationResult(
         category=category,
