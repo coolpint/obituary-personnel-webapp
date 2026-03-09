@@ -11,6 +11,12 @@ BYLINE_PATTERNS = [
     re.compile(r"^\s*[^=\n]{1,30}?(?:기자|특파원|논설위원)\s*=\s*"),
 ]
 
+SOURCE_MARKER_PATTERNS = [
+    # Wire/source markers like "(서울=연합뉴스)" or "(도쿄=연합뉴스TV)"
+    re.compile(r"\([^()\n]{1,20}=[^()\n]{1,40}\)"),
+    re.compile(r"\((?:끝|종합|그래픽)\)"),
+]
+
 
 def strip_leading_byline(text: str) -> str:
     lines = []
@@ -22,6 +28,14 @@ def strip_leading_byline(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def strip_source_markers(text: str) -> str:
+    cleaned = text
+    for pattern in SOURCE_MARKER_PATTERNS:
+        cleaned = pattern.sub("", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned
+
+
 def clean_rss_text(text: str) -> str:
     if not text:
         return ""
@@ -29,6 +43,6 @@ def clean_rss_text(text: str) -> str:
     cleaned = re.sub(r"<[^>]+>", " ", cleaned)
     cleaned = cleaned.replace("\xa0", " ")
     cleaned = strip_leading_byline(cleaned)
+    cleaned = strip_source_markers(cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
-

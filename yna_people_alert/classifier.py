@@ -5,7 +5,7 @@ import re
 from typing import Iterable, List, Sequence, Set
 
 from .outlet_dictionary import normalize_name
-from .text_utils import strip_leading_byline
+from .text_utils import strip_leading_byline, strip_source_markers
 
 
 APPOINTMENT_KEYWORDS = {
@@ -161,13 +161,14 @@ def classify_category(text: str) -> tuple[str, List[str]]:
 
 def classify_item(text: str, outlets: Sequence[str] | Set[str], threshold: int) -> ClassificationResult:
     cleaned_text = strip_leading_byline(text)
+    outlet_text = strip_source_markers(cleaned_text)
 
     category, category_hits = classify_category(cleaned_text)
 
-    normalized_text = normalize_name(cleaned_text)
+    normalized_text = normalize_name(outlet_text)
     outlet_hits = sorted(
         set(outlet for outlet in set(outlets) if outlet and outlet in normalized_text)
-        | set(_find_outlet_hints_from_parentheses(cleaned_text))
+        | set(_find_outlet_hints_from_parentheses(outlet_text))
     )
     role_hits = sorted(
         set(_find_keywords(cleaned_text, MEDIA_ROLE_KEYWORDS))
