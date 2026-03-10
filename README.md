@@ -81,6 +81,12 @@ yna_people_alert/
 - GitHub Secrets: `SLACK_WEBHOOK_URL` (필수: 슬랙 알림)
 - GitHub Variables: `MEDIA_SCORE_THRESHOLD` (선택), `REQUEST_TIMEOUT_SECONDS` (선택), `SLACK_MENTION` (선택), `INCLUDE_SUMMARY_IN_ALERT` (선택), `ALERT_SUMMARY_MAX_CHARS` (선택)
 
+## Render Note
+
+- 실제 알림 실행 경로는 GitHub Actions입니다.
+- Render는 이 저장소를 `Web Service`로 연결해 두었을 때 배포 실패 알림이 반복될 수 있어, 최소 헬스 응답용 [render_health.py](/Users/air/codes/orbituary/render_health.py) 와 [render.yaml](/Users/air/codes/orbituary/render.yaml) 을 포함합니다.
+- Render를 계속 쓰지 않을 계획이면 Render 대시보드에서 `Auto-Deploy`를 끄거나 서비스를 삭제하는 편이 낫습니다.
+
 ## Scoring (MVP)
 
 - 직군 키워드 매칭: 개수당 +2 (최대 +4)
