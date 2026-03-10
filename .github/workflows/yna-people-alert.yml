@@ -8,6 +8,10 @@ on:
     - cron: "7 9 * * *"
   workflow_dispatch:
 
+concurrency:
+  group: yna-people-alert
+  cancel-in-progress: false
+
 jobs:
   run-alert:
     runs-on: ubuntu-latest
@@ -54,3 +58,61 @@ jobs:
         with:
           path: data
           key: yna-people-alert-data-${{ github.run_id }}
+
+      - name: Notify failure to Slack
+        if: ${{ failure() && env.SLACK_WEBHOOK_URL != '' }}
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          schedule = os.environ.get("EVENT_SCHEDULE", "").strip()
+          trigger = f"schedule {schedule}" if schedule else os.environ["EVENT_NAME"]
+          text = (
+              "[경고] YNA People Alert 실행 실패\n"
+              f"저장소: {os.environ['REPOSITORY']}\n"
+              f"트리거: {trigger}\n"
+              f"로그: {os.environ['RUN_URL']}"
+          )
+          payload = json.dumps({"text": text}).encode("utf-8")
+          request = urllib.request.Request(
+              os.environ["SLACK_WEBHOOK_URL"],
+              data=payload,
+              headers={"Content-Type": "application/json"},
+          )
+          with urllib.request.urlopen(request, timeout=15):
+              pass
+          PY
+
+      - name: Send daily heartbeat to Slack
+        if: ${{ success() && github.event_name == 'schedule' && github.event.schedule == '7 9 * * *' && env.SLACK_WEBHOOK_URL != '' }}
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import urllib.request
+
+          text = (
+              "[정상] YNA People Alert heartbeat\n"
+              "오늘 저녁 스케줄 실행이 정상 완료되었습니다.\n"
+              f"저장소: {os.environ['REPOSITORY']}\n"
+              f"로그: {os.environ['RUN_URL']}"
+          )
+          payload = json.dumps({"text": text}).encode("utf-8")
+          request = urllib.request.Request(
+              os.environ["SLACK_WEBHOOK_URL"],
+              data=payload,
+              headers={"Content-Type": "application/json"},
+          )
+          with urllib.request.urlopen(request, timeout=15):
+              pass
+          PY
