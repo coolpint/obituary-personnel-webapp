@@ -128,6 +128,16 @@ class Store:
         ).fetchone()
         return row is not None
 
+    def has_alert_history(self, item_id: int, channels: Sequence[str]) -> bool:
+        if not channels:
+            return False
+        placeholders = ",".join("?" for _ in channels)
+        row = self._conn.execute(
+            f"SELECT 1 FROM alerts WHERE item_id = ? AND channel IN ({placeholders}) LIMIT 1",
+            (item_id, *channels),
+        ).fetchone()
+        return row is not None
+
     def mark_alert(self, item_id: int, channel: str, status: str, error: str | None = None) -> None:
         self._conn.execute(
             """
@@ -141,4 +151,3 @@ class Store:
             (item_id, channel, status, error),
         )
         self._conn.commit()
-

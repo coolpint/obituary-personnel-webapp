@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import logging
 import time
+from typing import List
 
 from .classifier import classify_item
 from .notifier import (
     ConsoleNotifier,
+    Notifier,
     SlackWebhookNotifier,
     TelegramNotifier,
     build_alert_message,
@@ -20,28 +22,32 @@ from .store import Store
 logger = logging.getLogger("yna_people_alert")
 
 
-def build_notifier(settings: Settings):
+def build_notifiers(settings: Settings):
+    notifiers: List[Notifier] = []
     if settings.slack_webhook_url:
-        logger.info("Notifier: slack webhook")
-        return SlackWebhookNotifier(
-            webhook_url=settings.slack_webhook_url,
-            timeout_seconds=settings.request_timeout_seconds,
-            mention=settings.slack_mention,
+        notifiers.append(
+            SlackWebhookNotifier(
+                webhook_url=settings.slack_webhook_url,
+                timeout_seconds=settings.request_timeout_seconds,
+                mention=settings.slack_mention,
+            )
         )
     if settings.telegram_bot_token and settings.telegram_chat_id:
-        logger.info("Notifier: telegram")
-        return TelegramNotifier(
-            bot_token=settings.telegram_bot_token,
-            chat_id=settings.telegram_chat_id,
-            timeout_seconds=settings.request_timeout_seconds,
+        notifiers.append(
+            TelegramNotifier(
+                bot_token=settings.telegram_bot_token,
+                chat_id=settings.telegram_chat_id,
+                timeout_seconds=settings.request_timeout_seconds,
+            )
         )
-    logger.info(
-        "Notifier: console (set SLACK_WEBHOOK_URL or TELEGRAM_* env to enable alerts)"
-    )
-    return ConsoleNotifier()
+    if notifiers:
+        logger.info("Notifiers: %s", ", ".join(n.channel_name for n in notifiers))
+        return notifiers
+    logger.info("Notifier: console (set SLACK_WEBHOOK_URL or TELEGRAM_* env to enable alerts)")
+    return [ConsoleNotifier()]
 
 
-def run_once(settings: Settings, store: Store, outlet_dict: OutletDictionary, notifier) -> None:
+def run_once(settings: Settings, store: Store, outlet_dict: OutletDictionary, notifiers) -> None:
     outlets = outlet_dict.refresh_if_needed()
     logger.info("Loaded %d outlet names", len(outlets))
 
@@ -67,8 +73,6 @@ def run_once(settings: Settings, store: Store, outlet_dict: OutletDictionary, no
             continue
         if not result.is_media_related:
             continue
-        if store.is_alerted(item_id, notifier.channel_name):
-            continue
 
         message = build_alert_message(
             item,
@@ -76,13 +80,34 @@ def run_once(settings: Settings, store: Store, outlet_dict: OutletDictionary, no
             include_summary=settings.include_summary_in_alert,
             summary_max_chars=settings.alert_summary_max_chars,
         )
-        try:
-            notifier.send(message)
-            store.mark_alert(item_id, notifier.channel_name, "sent")
-            logger.info("Alert sent guid=%s", item.guid)
-        except Exception as exc:
-            store.mark_alert(item_id, notifier.channel_name, "failed", error=str(exc))
-            logger.exception("Alert failed guid=%s", item.guid)
+        configured_channels = [n.channel_name for n in notifiers if n.channel_name != "console"]
+        has_existing_history = store.has_alert_history(item_id, configured_channels)
+
+        for notifier in notifiers:
+            if store.is_alerted(item_id, notifier.channel_name):
+                continue
+
+            # When a new channel is added later, skip backfilling old items that were
+            # already delivered through another live channel.
+            if (
+                notifier.channel_name != "console"
+                and has_existing_history
+                and not store.is_alerted(item_id, notifier.channel_name)
+            ):
+                logger.info(
+                    "Skip backfill guid=%s channel=%s",
+                    item.guid,
+                    notifier.channel_name,
+                )
+                continue
+
+            try:
+                notifier.send(message)
+                store.mark_alert(item_id, notifier.channel_name, "sent")
+                logger.info("Alert sent guid=%s channel=%s", item.guid, notifier.channel_name)
+            except Exception as exc:
+                store.mark_alert(item_id, notifier.channel_name, "failed", error=str(exc))
+                logger.exception("Alert failed guid=%s channel=%s", item.guid, notifier.channel_name)
 
 
 def parse_args() -> argparse.Namespace:
@@ -107,16 +132,16 @@ def main() -> int:
         refresh_hours=settings.outlet_refresh_hours,
         timeout_seconds=settings.request_timeout_seconds,
     )
-    notifier = build_notifier(settings)
+    notifiers = build_notifiers(settings)
 
     try:
         if args.once:
-            run_once(settings, store, outlet_dict, notifier)
+            run_once(settings, store, outlet_dict, notifiers)
             return 0
 
         while True:
             try:
-                run_once(settings, store, outlet_dict, notifier)
+                run_once(settings, store, outlet_dict, notifiers)
             except Exception:
                 logger.exception("Run loop failed")
             time.sleep(settings.poll_seconds)

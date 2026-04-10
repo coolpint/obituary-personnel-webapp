@@ -43,11 +43,11 @@ python3 -m yna_people_alert.main
 - `OUTLET_REFRESH_HOURS`: 언론사 사전 갱신 주기(시간), 기본 `12`
 - `DB_PATH`: SQLite 경로, 기본 `./data/yna_people_alert.db`
 - `OUTLET_CACHE_PATH`: 언론사 캐시 JSON, 기본 `./data/outlets_cache.json`
-- `SLACK_WEBHOOK_URL`: 설정 시 슬랙 알림 사용(알림 우선순위 1순위)
+- `SLACK_WEBHOOK_URL`: 설정 시 슬랙 알림 사용
 - `SLACK_MENTION`: 선택. 예) `@channel`, `<!subteam^S12345|editors>`
 - `INCLUDE_SUMMARY_IN_ALERT`: 알림에 RSS 설명문 포함 여부, 기본 `true`
 - `ALERT_SUMMARY_MAX_CHARS`: 설명문 최대 길이, 기본 `500`
-- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`: 슬랙 미설정 시 텔레그램 알림 사용
+- `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`: 설정 시 텔레그램 알림 사용
 
 ## Project Structure
 
@@ -68,6 +68,13 @@ yna_people_alert/
 2. 웹훅 URL을 발급받아 `.env`의 `SLACK_WEBHOOK_URL`에 넣습니다.
 3. `python3 -m yna_people_alert.main --once`로 테스트합니다.
 
+## Telegram 설정
+
+1. `@BotFather`에서 봇을 만들고 `TELEGRAM_BOT_TOKEN`을 받습니다.
+2. 알림 받을 채팅방에 봇을 넣고 메시지를 한 번 보냅니다.
+3. `getUpdates`에서 `chat.id`를 확인해 `.env`의 `TELEGRAM_CHAT_ID`에 넣습니다.
+4. 슬랙과 텔레그램은 동시에 켤 수 있습니다.
+
 ## GitHub Actions 스케줄 실행
 
 워크플로 파일은 [yna-people-alert.yml](/Users/air/codes/orbituary/.github/workflows/yna-people-alert.yml)에 포함되어 있습니다.
@@ -81,7 +88,7 @@ yna_people_alert/
 
 리포지토리에 아래 값을 설정하세요.
 
-- GitHub Secrets: `SLACK_WEBHOOK_URL` (필수: 슬랙 알림)
+- GitHub Secrets: `SLACK_WEBHOOK_URL` (선택), `TELEGRAM_BOT_TOKEN` (선택), `TELEGRAM_CHAT_ID` (선택)
 - GitHub Variables: `MEDIA_SCORE_THRESHOLD` (선택), `REQUEST_TIMEOUT_SECONDS` (선택), `SLACK_MENTION` (선택), `INCLUDE_SUMMARY_IN_ALERT` (선택), `ALERT_SUMMARY_MAX_CHARS` (선택)
 
 ## Render Note
