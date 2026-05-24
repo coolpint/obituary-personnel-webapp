@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import List
+import time
 import xml.etree.ElementTree as ET
 
 import requests
@@ -27,8 +28,23 @@ def _text(node: ET.Element | None, tag: str, default: str = "") -> str:
 
 
 def fetch_rss_items(url: str, timeout_seconds: int = 15) -> List[RSSItem]:
-    response = requests.get(url, timeout=timeout_seconds)
-    response.raise_for_status()
+    headers = {
+        "User-Agent": "YNA-People-Alert/1.0 (+https://github.com/coolpint/obituary-personnel-webapp)"
+    }
+    last_error: requests.exceptions.RequestException | None = None
+
+    for attempt in range(3):
+        try:
+            response = requests.get(url, timeout=timeout_seconds, headers=headers)
+            response.raise_for_status()
+            break
+        except requests.exceptions.RequestException as exc:
+            last_error = exc
+            if attempt == 2:
+                raise
+            time.sleep(2**attempt)
+    else:
+        raise last_error or RuntimeError("Failed to fetch RSS")
 
     xml_text = response.text
     root = ET.fromstring(xml_text)
