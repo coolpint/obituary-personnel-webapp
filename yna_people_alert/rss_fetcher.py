@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import List
+import re
 import time
 import xml.etree.ElementTree as ET
 
@@ -27,6 +28,23 @@ def _text(node: ET.Element | None, tag: str, default: str = "") -> str:
     return child.text.strip()
 
 
+def _parse_rss_xml(xml_text: str) -> ET.Element:
+    """Parse RSS XML, tolerating occasional unescaped ampersands in feed URLs."""
+    try:
+        return ET.fromstring(xml_text)
+    except ET.ParseError:
+        # YNA sometimes emits media URLs such as
+        #   ...youtube.com/embed/...?...&start=126
+        # inside XML attributes without escaping the ampersand. That makes the
+        # whole feed invalid even though the item content is otherwise usable.
+        sanitized = re.sub(
+            r"&(?!#\d+;|#x[0-9A-Fa-f]+;|amp;|lt;|gt;|quot;|apos;)",
+            "&amp;",
+            xml_text,
+        )
+        return ET.fromstring(sanitized)
+
+
 def fetch_rss_items(url: str, timeout_seconds: int = 15) -> List[RSSItem]:
     headers = {
         "User-Agent": "YNA-People-Alert/1.0 (+https://github.com/coolpint/obituary-personnel-webapp)"
@@ -47,7 +65,7 @@ def fetch_rss_items(url: str, timeout_seconds: int = 15) -> List[RSSItem]:
         raise last_error or RuntimeError("Failed to fetch RSS")
 
     xml_text = response.text
-    root = ET.fromstring(xml_text)
+    root = _parse_rss_xml(xml_text)
     items: List[RSSItem] = []
 
     for item in root.findall("./channel/item"):
