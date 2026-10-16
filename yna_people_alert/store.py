@@ -5,7 +5,12 @@ import sqlite3
 from pathlib import Path
 from typing import Sequence
 
+from .classifier import ClassificationResult
 from .rss_fetcher import RSSItem
+
+
+# User approval: 2026-10-16 10:25 KST. SQLite sent_at uses UTC.
+RETRY_START_UTC = "2026-10-16 01:25:00"
 
 
 class Store:
@@ -56,6 +61,13 @@ class Store:
                 FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
             );
             """
+        )
+        # Keep historical failures as explicit exclusions; never replay them. This
+        # is idempotent, including when an older workflow cache is restored.
+        self._conn.execute(
+            """UPDATE alerts SET status = 'skipped_legacy'
+               WHERE status = 'failed' AND datetime(sent_at) < datetime(?)""",
+            (RETRY_START_UTC,),
         )
         self._conn.commit()
 
@@ -123,7 +135,7 @@ class Store:
 
     def is_alerted(self, item_id: int, channel: str) -> bool:
         row = self._conn.execute(
-            "SELECT 1 FROM alerts WHERE item_id = ? AND channel = ? LIMIT 1",
+            "SELECT 1 FROM alerts WHERE item_id = ? AND channel = ? AND status = 'sent' LIMIT 1",
             (item_id, channel),
         ).fetchone()
         return row is not None
@@ -137,6 +149,42 @@ class Store:
             (item_id, *channels),
         ).fetchone()
         return row is not None
+
+    def queue_alerts(self, item_id: int, channels: Sequence[str]) -> None:
+        # Snapshot all intended channels before sending any. Existing histories
+        # (including legacy failures) must not acquire newly configured channels.
+        live_channels = [channel for channel in channels if channel != "console"]
+        if self.has_alert_history(item_id, live_channels):
+            return
+        with self._conn:
+            self._conn.executemany(
+                """INSERT INTO alerts(item_id, channel, status)
+                   VALUES (?, ?, 'pending') ON CONFLICT(item_id, channel) DO NOTHING""",
+                [(item_id, channel) for channel in channels],
+            )
+
+    def pending_alerts(self):
+        # Read stored payloads, not the current RSS window or a new classification.
+        rows = self._conn.execute(
+            """SELECT i.*, c.category, c.matched_category_keywords, c.media_score,
+                      c.is_media_related, c.matched_roles, c.matched_outlets, a.channel
+               FROM alerts a JOIN items i ON i.id = a.item_id
+               JOIN classifications c ON c.item_id = i.id
+               WHERE a.status IN ('pending', 'failed') ORDER BY i.id, a.channel"""
+        ).fetchall()
+        for row in rows:
+            item = RSSItem(**{key: row[key] for key in (
+                "guid", "title", "summary", "link", "published_at", "raw_xml"
+            )})
+            result = ClassificationResult(
+                category=row["category"],
+                matched_category_keywords=json.loads(row["matched_category_keywords"]),
+                media_score=row["media_score"],
+                is_media_related=bool(row["is_media_related"]),
+                matched_roles=json.loads(row["matched_roles"]),
+                matched_outlets=json.loads(row["matched_outlets"]),
+            )
+            yield int(row["id"]), item, result, row["channel"]
 
     def mark_alert(self, item_id: int, channel: str, status: str, error: str | None = None) -> None:
         self._conn.execute(

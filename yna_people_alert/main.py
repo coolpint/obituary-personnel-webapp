@@ -48,6 +48,14 @@ def build_notifiers(settings: Settings):
 
 
 def run_once(settings: Settings, store: Store, outlet_dict: OutletDictionary, notifiers) -> None:
+    try:
+        collect_items(settings, store, outlet_dict, notifiers)
+    finally:
+        # A feed/dictionary outage must not block already queued deliveries.
+        send_pending(settings, store, notifiers)
+
+
+def collect_items(settings: Settings, store: Store, outlet_dict: OutletDictionary, notifiers) -> None:
     outlets = outlet_dict.refresh_if_needed()
     logger.info("Loaded %d outlet names", len(outlets))
 
@@ -74,40 +82,32 @@ def run_once(settings: Settings, store: Store, outlet_dict: OutletDictionary, no
         if not result.is_media_related:
             continue
 
+        store.queue_alerts(item_id, [n.channel_name for n in notifiers])
+
+
+def send_pending(settings: Settings, store: Store, notifiers) -> None:
+    by_channel = {notifier.channel_name: notifier for notifier in notifiers}
+    for item_id, item, result, channel in store.pending_alerts():
+        notifier = by_channel.get(channel)
+        if notifier is None or store.is_alerted(item_id, channel):
+            continue
         message = build_alert_message(
             item,
             result,
             include_summary=settings.include_summary_in_alert,
             summary_max_chars=settings.alert_summary_max_chars,
         )
-        configured_channels = [n.channel_name for n in notifiers if n.channel_name != "console"]
-        has_existing_history = store.has_alert_history(item_id, configured_channels)
-
-        for notifier in notifiers:
-            if store.is_alerted(item_id, notifier.channel_name):
-                continue
-
-            # When a new channel is added later, skip backfilling old items that were
-            # already delivered through another live channel.
-            if (
-                notifier.channel_name != "console"
-                and has_existing_history
-                and not store.is_alerted(item_id, notifier.channel_name)
-            ):
-                logger.info(
-                    "Skip backfill guid=%s channel=%s",
-                    item.guid,
-                    notifier.channel_name,
-                )
-                continue
-
-            try:
-                notifier.send(message)
-                store.mark_alert(item_id, notifier.channel_name, "sent")
-                logger.info("Alert sent guid=%s channel=%s", item.guid, notifier.channel_name)
-            except Exception as exc:
-                store.mark_alert(item_id, notifier.channel_name, "failed", error=str(exc))
-                logger.exception("Alert failed guid=%s channel=%s", item.guid, notifier.channel_name)
+        try:
+            notifier.send(message)
+        except Exception as exc:
+            # requests errors may contain webhook URLs or bot tokens. Persist and
+            # log only the exception type, never its message or traceback.
+            error_type = type(exc).__name__
+            store.mark_alert(item_id, channel, "failed", error=error_type)
+            logger.error("Alert failed guid=%s channel=%s error=%s", item.guid, channel, error_type)
+        else:
+            store.mark_alert(item_id, channel, "sent")
+            logger.info("Alert sent guid=%s channel=%s", item.guid, channel)
 
 
 def parse_args() -> argparse.Namespace:
