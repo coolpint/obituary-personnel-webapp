@@ -97,17 +97,23 @@ def send_pending(settings: Settings, store: Store, notifiers) -> None:
             include_summary=settings.include_summary_in_alert,
             summary_max_chars=settings.alert_summary_max_chars,
         )
+        if store.checkpoint is not None:
+            store.mark_alert(item_id, channel, "in_flight")
+            # Failure here aborts before sending. A remote intent without a
+            # receipt is deliberately held for reconciliation after a crash.
+            store.flush()
         try:
             notifier.send(message)
         except Exception as exc:
             # requests errors may contain webhook URLs or bot tokens. Persist and
             # log only the exception type, never its message or traceback.
             error_type = type(exc).__name__
-            store.mark_alert(item_id, channel, "failed", error=error_type)
+            store.mark_alert(item_id, channel, "uncertain" if store.checkpoint else "failed", error=error_type)
             logger.error("Alert failed guid=%s channel=%s error=%s", item.guid, channel, error_type)
         else:
             store.mark_alert(item_id, channel, "sent")
             logger.info("Alert sent guid=%s channel=%s", item.guid, channel)
+        store.flush()
 
 
 def parse_args() -> argparse.Namespace:

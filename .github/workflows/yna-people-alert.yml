@@ -1,4 +1,5 @@
 name: YNA People Alert
+run-name: "YNA People Alert ${{ inputs.slot || github.event.schedule }}"
 
 on:
   schedule:
@@ -7,6 +8,11 @@ on:
     # KST 18:07
     - cron: "7 9 * * *"
   workflow_dispatch:
+    inputs:
+      slot:
+        description: "Scheduled KST slot, e.g. 2026-10-20T10:07+09:00 (required for dispatch)"
+        required: true
+        type: string
 
 concurrency:
   group: yna-people-alert
@@ -14,7 +20,11 @@ concurrency:
 
 jobs:
   run-alert:
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
     timeout-minutes: 15
     env:
       RSS_URL: https://www.yna.co.kr/rss/people.xml
@@ -25,8 +35,8 @@ jobs:
       INCLUDE_SUMMARY_IN_ALERT: ${{ vars.INCLUDE_SUMMARY_IN_ALERT || 'true' }}
       ALERT_SUMMARY_MAX_CHARS: ${{ vars.ALERT_SUMMARY_MAX_CHARS || '500' }}
       OUTLET_REFRESH_HOURS: "12"
-      DB_PATH: ./data/yna_people_alert.db
-      OUTLET_CACHE_PATH: ./data/outlets_cache.json
+      DB_PATH: ./state/data/yna_people_alert.db
+      OUTLET_CACHE_PATH: ./state/data/outlets_cache.json
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       SLACK_MENTION: ${{ vars.SLACK_MENTION || '' }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -43,23 +53,22 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Restore state cache
-        uses: actions/cache/restore@v4
+      - name: Checkout durable state (missing state fails closed)
+        uses: actions/checkout@v4
         with:
-          path: data
-          key: yna-people-alert-data-${{ github.run_id }}
-          restore-keys: |
-            yna-people-alert-data-
+          ref: alert-state
+          path: state
 
-      - name: Run once
-        run: python -m yna_people_alert.main --once
+      - name: Read immutable run creation time
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: echo "RUN_CREATED_AT=$(gh api repos/${{ github.repository }}/actions/runs/${{ github.run_id }} --jq .created_at)" >> "$GITHUB_ENV"
 
-      - name: Save state cache
-        if: always()
-        uses: actions/cache/save@v4
-        with:
-          path: data
-          key: yna-people-alert-data-${{ github.run_id }}
+      - name: Run slot with durable checkpoints
+        env:
+          STATE_CHECKOUT: ./state
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: python -m yna_people_alert.scheduled
 
       - name: Notify failure to Slack
         if: ${{ failure() && env.SLACK_WEBHOOK_URL != '' }}
@@ -80,33 +89,6 @@ jobs:
               "[경고] YNA People Alert 실행 실패\n"
               f"저장소: {os.environ['REPOSITORY']}\n"
               f"트리거: {trigger}\n"
-              f"로그: {os.environ['RUN_URL']}"
-          )
-          payload = json.dumps({"text": text}).encode("utf-8")
-          request = urllib.request.Request(
-              os.environ["SLACK_WEBHOOK_URL"],
-              data=payload,
-              headers={"Content-Type": "application/json"},
-          )
-          with urllib.request.urlopen(request, timeout=15):
-              pass
-          PY
-
-      - name: Send daily heartbeat to Slack
-        if: ${{ success() && github.event_name == 'schedule' && github.event.schedule == '7 9 * * *' && env.SLACK_WEBHOOK_URL != '' }}
-        env:
-          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          python - <<'PY'
-          import json
-          import os
-          import urllib.request
-
-          text = (
-              "[정상] YNA People Alert heartbeat\n"
-              "오늘 저녁 스케줄 실행이 정상 완료되었습니다.\n"
-              f"저장소: {os.environ['REPOSITORY']}\n"
               f"로그: {os.environ['RUN_URL']}"
           )
           payload = json.dumps({"text": text}).encode("utf-8")

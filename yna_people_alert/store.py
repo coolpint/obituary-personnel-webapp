@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 from .classifier import ClassificationResult
 from .rss_fetcher import RSSItem
@@ -14,7 +14,9 @@ RETRY_START_UTC = "2026-10-16 01:25:00"
 
 
 class Store:
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path, checkpoint: Callable[[], None] | None = None):
+        # A durable runner must publish the send intent before contacting a sink.
+        self.checkpoint = checkpoint
         self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.db_path))
@@ -59,6 +61,20 @@ class Store:
                 sent_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(item_id, channel),
                 FOREIGN KEY (item_id) REFERENCES items(id) ON DELETE CASCADE
+            );
+
+            CREATE TABLE IF NOT EXISTS collection_slots (
+                slot TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                run_id TEXT NOT NULL,
+                started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                completed_at TEXT,
+                error TEXT
+            );
+
+            CREATE TABLE IF NOT EXISTS system_notifications (
+                name TEXT PRIMARY KEY,
+                status TEXT NOT NULL
             );
             """
         )
@@ -199,3 +215,39 @@ class Store:
             (item_id, channel, status, error),
         )
         self._conn.commit()
+
+    def flush(self) -> None:
+        if self.checkpoint is not None:
+            self.checkpoint()
+
+    def claim_slot(self, slot: str, run_id: str) -> bool:
+        # Remote runners are serialized by workflow concurrency, local ones by
+        # flock. A completed slot is immutable; failed/interrupted slots resume
+        # only unconfirmed work (in_flight deliveries are never replayed).
+        with self._conn:
+            row = self._conn.execute(
+                "SELECT status FROM collection_slots WHERE slot = ?", (slot,)
+            ).fetchone()
+            if row and row["status"] == "succeeded":
+                return False
+            self._conn.execute(
+                """INSERT INTO collection_slots(slot, status, run_id) VALUES (?, 'running', ?)
+                   ON CONFLICT(slot) DO UPDATE SET status='running', run_id=excluded.run_id,
+                       started_at=CURRENT_TIMESTAMP, completed_at=NULL, error=NULL""",
+                (slot, run_id),
+            )
+        self.flush()
+        return True
+
+    def finish_slot(self, slot: str, status: str, error: str | None = None) -> None:
+        with self._conn:
+            self._conn.execute(
+                """UPDATE collection_slots SET status=?, error=?, completed_at=CURRENT_TIMESTAMP
+                   WHERE slot=?""", (status, error, slot)
+            )
+        self.flush()
+
+    def delivery_problems(self) -> int:
+        return self._conn.execute(
+            "SELECT count(*) FROM alerts WHERE status IN ('pending', 'failed', 'in_flight', 'uncertain')"
+        ).fetchone()[0]

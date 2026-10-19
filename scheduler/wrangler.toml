@@ -1,0 +1,28 @@
+name = "yna-people-scheduler"
+main = "worker.mjs"
+compatibility_date = "2026-10-19"
+workers_dev = false
+preview_urls = false
+
+# UTC: KST 10:07/18:07 collection; +20 minutes watchdog.
+# Never deploy before approval and durable-state migration.
+[triggers]
+crons = ["7 1,9 * * *", "27 1,9 * * *"]
+
+[vars]
+GITHUB_REPOSITORY = "coolpint/obituary-personnel-webapp"
+GITHUB_WORKFLOW = "yna-people-alert.yml"
+STATE_BRANCH = "alert-state"
+ENABLED = "false"
+
+[[durable_objects.bindings]]
+name = "COORDINATOR"
+class_name = "Coordinator"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Coordinator"]
+
+# Set through secure prompts only, never commit values:
+# GITHUB_DISPATCH_TOKEN (only target repo: Actions write + Contents read)
+# SLACK_WEBHOOK_URL (same operational destination, entered by the user)

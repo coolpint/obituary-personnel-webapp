@@ -1,0 +1,36 @@
+name: YNA state migration (manual approval required)
+on:
+  workflow_dispatch:
+    inputs:
+      cache_key:
+        description: "Exact reviewed cache key of the latest completed production run"
+        type: string
+        required: true
+
+concurrency:
+  group: yna-people-alert
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/cache/restore@v4
+        id: cache
+        with:
+          path: data
+          key: ${{ inputs.cache_key }}
+          fail-on-cache-miss: true
+      - name: Seed durable state without collecting or sending alerts
+        env:
+          APPROVED_CACHE_KEY: ${{ inputs.cache_key }}
+          MATCHED_CACHE_KEY: ${{ steps.cache.outputs.cache-matched-key }}
+        run: python scripts/bootstrap_state.py

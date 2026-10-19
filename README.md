@@ -77,14 +77,18 @@ yna_people_alert/
 
 ## GitHub Actions 스케줄 실행
 
+독립 예약 실행기·회차 보호 변경의 구조와 **운영 전 승인/이관 절차**는
+[reliable-scheduling.md](docs/reliable-scheduling.md)를 먼저 참고하세요.
+상태 branch 이관 전 새 워크플로로 실제 수집을 실행하지 마세요.
+
 워크플로 파일은 [yna-people-alert.yml](/Users/air/codes/orbituary/.github/workflows/yna-people-alert.yml)에 포함되어 있습니다.
 
 - 실행 시각(한국시간 KST): 매일 오전 10시 7분, 오후 6시 7분
 - cron 기준(UTC): `01:07`, `09:07`
-- 각 실행은 `--once`로 1회 처리 후 종료
+- 각 실행은 durable 예약 진입점으로 회차당 1회 처리 후 종료
 - 실행 실패 시 슬랙으로 즉시 경고를 보냅니다.
 - 하루 1회(오후 6시 7분 실행 성공 시) 정상 heartbeat를 슬랙으로 보냅니다.
-- `concurrency`를 걸어 중복 실행이 겹치지 않게 합니다.
+- `concurrency`와 회차 기록, 영구 기사 이력을 함께 사용합니다.
 
 리포지토리에 아래 값을 설정하세요.
 
