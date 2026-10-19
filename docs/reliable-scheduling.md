@@ -1,149 +1,152 @@
-# 독립 예약 실행과 회차 보호 — 배포 전 검토안
+# 비공개 최소 상태와 독립 예약 — 설계·격리 테스트 단계
 
-이 변경은 준비·격리 테스트 단계다. 운영 배포, 새 서비스/자격정보 설정,
-상태 이관, 실제 수집·시험 발송, 기존 cron 비활성화는 수행하지 않았다.
+2026-10-19 수정안. 이전 공개 `alert-state` 설계를 대체한다. main·기존 cron·운영 권한은
+변경하지 않았고, 새 서비스·자격정보 설정·실제 수집/발송도 하지 않았다. Draft PR은 재시도하지
+않는다. 이 문서와 테스트 통과는 운영 준비 완료나 예정 시각 실행 성공을 의미하지 않는다.
 
-## 조사와 선택
+## 결정과 저장 범위
 
-- 기준 main: `d58b1c8fc570bf9956588a27b1ae116b2ab64c8a`.
-- 저장소에 AGENTS.md 등 별도 작업 지침은 없다.
-- 기존 GitHub cron `01:07/09:07 UTC`는 그대로 남긴다. Actions 생성 지연에
-  대비해 독립 실행기가 `workflow_dispatch`를 호출한다. GitHub runner/API 자체가
-  장애이면 정시 실행을 보장할 수 없으며 외부 감시가 그 상황을 경고한다.
-- `render.yaml`은 Python 헬스 HTTP 서비스만 실행한다. 실제 Render 계정의 요금제와
-  서비스 상태는 확인할 연결 도구가 없어 미확인이다. 무료 web은 유휴 15분 후 중지되고
-  로컬 파일이 소실되므로 독립 상시 예약기로 쓸 수 없다. Render Cron은 서비스당
-  최소 월 $1이며 SQLite 영구 디스크도 지원하지 않는다.
-- 연결된 Netlify/Vercel에서 `obituary` 이름의 프로젝트는 없었다. 다른 이름의
-  기존 프로젝트나 계정 전체의 무료 잔여량은 확인하지 않았다.
-- 로컬 `gh` 인증은 만료됐다. 공개 Git clone과 연결된 GitHub 읽기 API는 정상이다.
-  기존 인증을 추출·복사하지 않으며, 로컬 상시 실행이나 Codex 로컬 자동화는 쓰지 않는다.
-- 권고안: **Cloudflare Workers Free + SQLite Durable Object 1개**. 새 서비스이므로
-  승인 전 생성·배포하지 않는다. 하루 예약 4회(수집 2회, 감시 2회)는 현재 무료 한도보다
-  작다. 무료 계정이어야 하며 유료 전환을 자동 승인하지 않는다. 기존 계정의 공유
-  무료 한도를 넘으면 실패할 수 있으므로 계정 확인과 사용량 점검이 필요하다.
-- 대안: 사용자가 이미 운영하는 항상 켜진 서버에서 동일한 dispatch/watch 로직을 실행하거나,
-  Render Cron(유료)을 사용한다. 새 무료 외부 cron 서비스도 가능하지만 정확한 회차 값을
-  생성하고 독립 감시 및 알림 중복 방지 상태를 보존할 실행 환경이 추가로 필요하다.
+계획했던 Cloudflare Worker와 SQLite-backed Durable Object(DO) **한 개**를 재사용한다.
+Python/Actions 수집·분류·Slack/Telegram 코드는 유지하고, DO를 비공개 상태 원본으로 삼는다.
+별도 비공개 Git repo, SQL 서버, KV, R2, 상태용 장기 공유 토큰은 추가하지 않는다.
 
-공식 근거(2026-10-19 확인):
-[Cloudflare Cron](https://developers.cloudflare.com/workers/configuration/cron-triggers/),
-[Workers 한도](https://developers.cloudflare.com/workers/platform/limits/),
-[Durable Objects 무료 SQLite/한도](https://developers.cloudflare.com/durable-objects/platform/pricing/),
-[Render Free](https://render.com/docs/free),
-[Render Cron 비용](https://render.com/docs/cronjobs),
-[GitHub dispatch 권한](https://docs.github.com/rest/actions/workflows#create-a-workflow-dispatch-event).
+| 상태 | 필요한 최소 정보 | 제외/보존 |
+|---|---|---|
+| sent/skipped_legacy | SHA-256(GUID), 채널명, 상태 | 완료 기사 제목·URL·본문·원문 XML·시각 제외. 해시는 임의 삭제하지 않음 |
+| pending/failed/in_flight/uncertain | 원 GUID, 제목·요약·링크·게시시각, 기존 분류, 채널·상태·오류 유형·시각 | 재시도·수신 확인용. raw XML 제외, 완료 후 다음 체크포인트에서 본문 제거 |
+| 회차·heartbeat | 회차, run ID, 상태·시각·오류 유형 | 최근 60회차, heartbeat 최대 120개 |
+| 동시 실행·갱신 | run/attempt lease, revision | 낡은 작성자와 상태 덮어쓰기 거부 |
+| 예약·감시 | 회차별 요청/경고 intent·결과 | 기사 내용 없음 |
+| 이관 출처 | exact cache key, 원 DB SHA-256 | DB 전체·자격정보는 저장하지 않음 |
 
-## 실행과 상태
+토큰·웹훅·Telegram chat ID는 상태에 저장하지 않는다. 해시는 익명화가 아니므로 이것도
+비공개로 유지한다. 언론사 공개 목록은 재생성 가능해 원격 상태에 넣지 않는다. 현재 운영
+캐시를 내려받거나 내용을 출력하지 않았다. 실제 이력 건수·대기 큐 크기는 승인 후 이관 시 검토한다.
 
-1. 외부 Cron `7 1,9 * * *`가 KST `YYYY-MM-DDT10:07+09:00` 또는
-   `YYYY-MM-DDT18:07+09:00`을 전달한다. 실제 처리 시간이 아닌 이벤트의 scheduledTime을 쓴다.
-2. 모든 수집은 동일한 Actions concurrency group을 통과한다. 로컬 DB 접근에는 flock도 걸린다.
-   GitHub는 pending run을 하나만 보존하므로 폭주하는 dispatch는 피한다.
-3. `alert-state` 전용 branch에 기존 SQLite 기사·채널 이력과 회차 기록을 보존한다.
-   캐시 누락 시 새 DB를 만드는 fallback은 없다. branch/DB가 없거나 손상되면 전송 전에 멈춘다.
-4. 회차 시작, 전송 직전 intent, 전송 결과, 회차 완료를 순서대로 Git commit/push한다.
-   non-fast-forward나 인증 오류는 강제 덮어쓰지 않고 실패시킨다. 코드 main은 수정하지 않는다.
-5. 완료된 회차는 수집·기사 발송·저녁 heartbeat를 다시 하지 않는다. 실패/중단된 회차는
-   재시도할 수 있지만 저장된 성공 전송과 불확실 전송은 다시 보내지 않는다.
-6. 기존 schedule은 최초 run의 created_at과 cron으로 회차를 구한다. 재실행 시각으로
-   구하지 않는다. GitHub는 원래 예정 날짜를 제공하지 않으므로 추정 지연이 6시간을 넘으면
-   중단한다. 하루 이상 늦은 이벤트가 같은 시간대에 도착하는 경우 원래 날짜를 구별할 수
-   없다는 한계가 있다. 외부 dispatch는 명시 회차이므로 이 한계가 없다.
-7. 외부 Cron `27 1,9 * * *`는 해당 회차의 health.json을 **GitHub API로 직접** 읽는다.
-   기록 없음, running/failed, 전송 확인 필요, API/인증 오류를 기존 Slack 목적지로 경고한다.
-   수집 워크플로를 재실행해서 감시하는 방식이 아니므로 run이 전혀 없어도 감지한다.
-8. Durable Object가 중복 dispatch와 감시 경고를 직렬화한다. 경고는 회차당 한 번만 시도하고,
-   발송 결과가 불확실하면 상태를 남기고 자동 재발송하지 않는다. 경고 이후 복구 알림은 없다.
+## 왜 Actions 로그·캐시·아티팩트가 아닌가
 
-기사의 GUID/채널별 이력, 기존 분류, 언론사 사전, Slack·Telegram 수신처는 그대로 사용한다.
-과거 `skipped_legacy` 이력을 유지하며, 기존 `failed` 항목의 허용된 재시도도 유지한다.
-운영 진입점은 반드시 `python -m yna_people_alert.scheduled`여야 한다. 기존 `main --once`
-진입점에는 원격 상태 보장과 전역 잠금이 없으므로 운영 병행 실행을 금지한다.
+| 대안 | 판단 |
+|---|---|
+| 로그/run 성공 여부 | 채널별 intent의 원자적 저장·갱신·잠금 수단이 아님. run 없음도 성공 로그로 판단할 수 없음 |
+| 캐시 | 미접근 7일 후 삭제 및 용량별 eviction. 기본 브랜치 캐시는 fork PR에서도 읽을 수 있음 |
+| 아티팩트 | 기본 로그/아티팩트 보존 90일, 저장소 read 사용자가 다운로드 가능. 공개 repo의 비공개 저장소가 아님. v4 불변 파일도 전송별 체크포인트와 맞지 않음 |
+| 별도 비공개 Git repo | 가능하지만 contents:write 장기 자격정보·별도 repo·Git 충돌 처리가 추가됨 |
+| 암호화 아티팩트 | 암호화 키·교체·복구가 추가되고 expiry/원자적 잠금 문제는 남음 |
+| 기존 계획의 DO 재사용 | 비공개성·직렬화·원자적 확정·독립 감시를 같은 작은 저장소에서 제공 |
 
-## 외부 전송의 불확실성
+근거: [캐시 접근·삭제](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching),
+[아티팩트 접근·보존](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/download-workflow-artifacts),
+[v4 불변성](https://docs.github.com/en/actions/tutorials/store-and-share-data),
+[DO 원자적 저장](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/).
+새 저장소가 필요한 이유는 크기보다 **비공개성·전송 전 원격 확정·복구·동시 실행 보호**다.
 
-Slack Incoming Webhook과 Telegram sendMessage는 이 프로그램이 사용할 수 있는
-공통 멱등 키가 없다. 전송 성공 후 응답/저장이 유실되면 정확히 한 번 전송과 자동 복구를
-동시에 보장할 수 없다. 이 변경은 중복 방지를 위해 다음을 선택한다.
+## 실행·인증·복구
 
-- 원격 intent 저장 실패: 아직 보내지 않았으므로 중단한다.
-- intent 후 중단 또는 응답 불확실: `in_flight`/`uncertain`을 보존하고 자동 재전송하지 않는다.
-- 상태는 전송 문제가 해결될 때까지 failed이며 정상 heartbeat를 내지 않는다.
-- 운영자가 수신처에서 실제 도착 여부를 확인한 뒤 상태를 sent 또는 pending으로
-  정정하는 별도 승인이 필요하다. 확인 없이 pending으로 되돌리지 않는다.
-- 따라서 일부 알림은 중복 대신 확인 대기로 남을 수 있다. 기존 실패 항목은 다음 실행에서
-  재시도하지만, 새 durable 실행 중 발생한 불확실 오류는 이 보호 규칙을 따른다.
-- 실패 알림용 기존 Actions 단계는 별도로 유지된다. 서로 다른 실패 run에 대한 경고는
-  반복될 수 있다. 기사 알림과 저녁 heartbeat, 외부 watchdog 경고의 회차 보호와는 별개다.
-- 외부 예약기 자체가 완전히 멈추면 같은 예약기의 watchdog도 멈춘다. Cloudflare 실행 이력
-  점검 또는 별도 제공자의 dead-man 감시를 추가해야 그 장애까지 독립적으로 감지할 수 있다.
+1. 외부 Cron `7 1,9 * * *`는 scheduledTime에서 명시 KST 회차를 만들어 main을 dispatch한다.
+   기존 cron도 유지하고 모든 수집은 같은 Actions concurrency group을 통과한다.
+2. Actions는 audience가 승인된 `https://…workers.dev/state`인 짧은 수명 GitHub OIDC JWT를
+   요청한다. 장기 상태 비밀번호는 없다. TLS POST만 허용하고 redirect·토큰 출력은 금지한다.
+3. Worker는 GitHub JWKS/RS256 서명, issuer/audience/시간, repository ID `857560108`,
+   정확한 repo/main/workflow_ref/subject/trigger를 검증한다. PR/fork/다른 workflow는 거부한다.
+   공개 URL에 인증 없이 데이터가 노출되는 것은 아니다. GET/health 경로도 제공하지 않는다.
+4. DO가 lease와 snapshot+revision을 반환하고 임시 로컬 SQLite에 복원한다. 상태가 없으면
+   빈 이력으로 시작하지 않는다. API는 initialize/acquire/checkpoint/release 네 가지다.
+5. 회차 시작 → 전송 intent → 전송 결과 → 회차 완료를 CAS로 원격 확정한다. 저장 성공 응답
+   전에 발송하지 않는다. revision 불일치·한도·인증 오류는 중단한다. 완료 해시 삭제도 거부한다.
+6. 정상 종료 시 lease를 반납한다. 중단 lease는 시간만으로 만료시키지 않는다. 새 run은
+   GitHub로 **이전 run의 정확한 attempt가 completed**임을 확인한 뒤 인계한다. 확인 불가면
+   멈춘다. OIDC의 run/attempt와 일치하지 않는 작성자는 체크포인트를 쓸 수 없다.
+7. 외부 `27 1,9 * * *` Cron은 DO를 직접 확인한다. run이 전혀 없거나 실패/미완료이면
+   동일 Slack 목적지에 회차당 한 번 경고한다. 감시용 Actions run을 다시 만드는 방식이 아니다.
+8. 기존 cron은 최초 run created_at으로 회차를 추정하며 추정 지연 6시간 초과 시 중단한다.
+   GitHub가 원 예정 날짜를 제공하지 않아 하루 이상 늦은 이벤트를 완전히 구분하지 못하는
+   한계는 남는다. 명시 slot 외부 dispatch는 이 추정에 의존하지 않는다.
 
-## 승인 요청을 한 번에 제시할 항목
+[GitHub 공식 OIDC claims/권한](https://docs.github.com/en/actions/reference/security/oidc)에 따르면
+`id-token:write`는 JWT 요청 허용이며 저장소 쓰기 권한을 주지 않는다. 기존 Git checkpoint를
+제거하고 snapshot 어댑터·범위 제한 OIDC 검증을 추가했다. 범용 CRUD·다중 DB·토큰 서버·별도
+백그라운드 큐는 만들지 않았다. OIDC는 보안상 중요하므로 실제 연동 검증은 별도 필수다.
 
-1. **코드 main 병합/배포**와 짧은 전환 창. 기존 예약/수동 run이 실행 중·대기 중이지 않은지
-   확인하고 전환한다. 코드가 바뀌기 전 run이 나중에 구 DB로 발송하지 않도록 모두 종료를 확인한다.
-2. **임시 Actions 토큰 권한**: 수집 job `contents:write`, `actions:read`;
-   이관 job `contents:write`. contents 권한은 GitHub 특성상 branch 한 개로 제한되지 않는다.
-   코드에서는 `alert-state`만 push하지만 main 쓰기도 가능한 토큰이라는 점을 승인해야 한다.
-3. **상태 공개 범위**: 현재 저장소는 공개다. `alert-state`도 공개되며 RSS 기사 원문/분류,
-   채널명과 전송 상태·시각, 회차 기록이 Git 이력으로 남는다. 토큰·웹훅·chat ID는 저장하지 않는다.
-   이런 메타데이터 공개가 불가하면 비공개 상태 저장소/외부 DB로 설계를 바꿔야 한다.
-4. **Cloudflare Free Worker와 SQLite Durable Object 신규 생성**. 권한은 대상 계정의
-   Workers Scripts 편집과 예약·binding·migration 배포 권한이며, 계정 OAuth/로그인 흐름을 사용한다.
-   도메인·DNS·유료 플랜 권한은 필요 없다. 계정 전체 토큰은 만들지 않는다.
-5. **새 GitHub fine-grained PAT**: `coolpint/obituary-personnel-webapp` 한 저장소만,
-   `Actions:write`(dispatch 및 읽기), `Contents:read`(health), 자동 Metadata read.
-   Secrets/Admin/Contents write/Issues 권한은 불필요하다. 적절한 만료일과 교체 담당자를 정한다.
-   PAT를 사용자 보안 입력으로 Worker secret `GITHUB_DISPATCH_TOKEN`에 설정한다.
-   GitHub App installation token 방식도 가능하지만 앱 설치·개인키 보관이 추가된다.
-6. **동일 Slack 목적지 외부 사용**: 사용자가 기존 webhook을 직접 보안 입력으로
-   Worker secret `SLACK_WEBHOOK_URL`에 설정한다. GitHub Secret에서 값을 읽어오지 않는다.
-   Telegram 자격정보는 외부 예약기로 이동하지 않는다.
-7. **실제 검증 범위**: 수동 실제 수집/Slack·Telegram 시험 발송은 별도 승인 전 금지다.
-   권고는 시험 기사 재발송 대신 다음 예정 회차의 실제 실행/신규 기사 전달만 관찰하는 것이다.
-8. **기존 cron**: 이 변경에서는 유지한다. 외부 예정 회차 성공 확인 후 비활성화 여부를
-   결정한다. 비활성화는 별도 승인 후 수행한다.
+기존 sent/skipped_legacy와 허용된 failed 재시도를 복원하고, 새 채널 과거 기사 보충 발송은
+하지 않는다. 응답 유실 시 정확히 한 번 전송과 무조건 자동 복구를 동시에 보장할 수 없어,
+in_flight/uncertain은 보류한다. 수신 확인 후 승인된 복구 작업에서 sent/pending으로 정정한다.
+응답 유실 뒤 낡은 revision 재시도는 거절하고 다음 실행이 원격 상태를 다시 읽는다.
+확인 대기 payload는 RSS 창에서 사라져도 남는다. 불확실 heartbeat도 정상 완료로 위장하지 않는다.
 
-## 승인 후 실행 순서
+SQLite DO는 지난 30일 [PITR](https://developers.cloudflare.com/durable-objects/api/sqlite-storage-api/#pitr-point-in-time-recovery-api)를
+제공한다. 단 과거 상태로 무턱대고 복원하면 이미 전송한 알림을 다시 보낼 수 있다. 자동 PITR·
+초기화·deleteAll API는 만들지 않았다. 재해 복구는 dispatch 중지·수신 이력 대조·상태 병합을
+승인받아 수행해야 한다. PITR는 로컬에서 지원되지 않아 이번에 실제 복원 검증하지 않았다.
 
-1. 미실행/지연 진단과 마지막 완료 run 및 **최신 cache key**를 다시 확인한다.
-   `yna-people-alert-data-39130538585`는 조사 당시 성공 run의 후보일 뿐 최신이라고 단정하지 않는다.
-   모든 기존 run을 확인하고 이관 시각 직전의 정상 DB를 선택한다. 과거 DB를 쓰면 최근 기사
-   재전송 위험이 있다. 상태 cache가 없으면 빈 DB로 진행하지 않고 멈춘다.
-2. 코드 병합 후 수집을 시작하기 전에 수동 `YNA state migration` workflow를 정확한 검토된
-   cache key로 한 번 실행한다. 최신 이력이 실제 포함됐는지 상태 수·sent 이력·해시를 확인한다.
-   이관은 수집/알림을 호출하지 않고, 기존 branch가 있으면 덮어쓰지 않는다.
-3. Cloudflare를 Free로 확인하고 Worker/DO를 준비한다. 기본 `ENABLED=false`로 배포한다.
-   보안 입력으로 두 secret을 설정한다. GitHub Secret 추출이나 CLI 토큰 출력은 금지다.
-4. 설정, cron 시간, 대상 저장소/워크플로, DO binding, 권한을 확인한다. 승인받은 전환 창에
-   `ENABLED=true`로 재배포한다. Cron 변경 전파는 최대 15분 걸릴 수 있으므로 예정 회차 전에 끝낸다.
-5. 다음 KST 10:07 또는 18:07 회차에서 외부 scheduled 이벤트, GitHub run 생성/시작,
-   DB running→succeeded, 기존 수신처 신규 기사 수신, 저녁 heartbeat를 확인한다.
-   기사 없는 회차라면 신규 기사 발송 검증은 별도로 미완료라고 기록한다.
-6. +20분 watchdog가 정상 회차에 침묵하는지 확인한다. 미실행 경고의 실제 외부 발송은
-   모의 테스트까지만 확인했으므로, 운영 경고 시험을 원하면 별도 영향 승인을 받는다.
-7. 같은 회차의 늦은 schedule은 상태 조회 후 skip해야 한다. 확인을 위해 실제 수집을
-   강제 재실행하지 않고 자연 도착한 기존 schedule 로그 또는 격리 테스트 증거를 사용한다.
-8. 첫 예정 회차 성공은 배포 완료와 별개로 기록한다. 최소 오전·저녁 두 회차 및 다음 날
-   회차까지 관찰한 뒤 기존 cron 유지/중단을 결정한다.
+스냅샷 앱 한도는 1MiB다(서비스 value 한도 2MB). 초과하면 실패시키고 중복 방지 해시는
+지우지 않는다. 커지면 DO 내 행별 저장으로 전환하는 별도 변경을 검토한다. durable 전송 로그에
+GUID는 제외했지만 기존 집계·실패 정보는 Actions 로그에 남는다. 상태/본문/JWT 아티팩트는 없다.
+Worker 자체 중단·공유 한도 소진은 같은 감시도 멈춘다. 독립 제공자의 dead-man 감시는 범위 밖이다.
 
-## 롤백
+## 무료 범위·예상 사용량·초과 동작 (2026-10-19 공식 확인)
 
-Worker `ENABLED=false`로 외부 dispatch부터 중지한다. 진행 중 수집을 무턱대고 취소하지
-않고 최신 `alert-state`를 보존한다. 코드만 구버전/과거 cache로 되돌리면 이미 전송된 기사를
-다시 보낼 수 있다. 따라서 복구는 durable runner와 최신 상태를 유지한 채 수정하는 것이 우선이다.
-구 실행기로 되돌리는 경우에도 최신 durable DB를 가져오는 절차를 승인받고 검증해야 한다.
-상태 branch를 삭제하거나 force push하지 않는다.
+| 항목 | Free 한도 | 이 설계 |
+|---|---|---|
+| Workers | 하루 100,000 요청, 요청 CPU 10ms | 정상 `14 + 2D` 요청/일. 완료 회차를 기존 cron 2회가 확인하면 +4 |
+| DO | 하루 100,000 요청, duration 13,000 GB-s | 요청 수는 대체로 동일. D=기사의 채널별 전송 시도 수 |
+| SQLite DO | 읽기 500만·쓰기 10만 rows/일, 계정 전체 5GB | snapshot 앱 상한 1MiB + 작은 lease/감시 기록, 내부 메타데이터/PITR·공유 계정 사용량 별도 |
+| Cron | Free 계정 최대 5개 | 2개 사용 |
 
-## 검증 범위
+예시 **하루 신규 10기사×2채널이면 D=20**, 정상 54요청 또는 기존 cron 확인까지 58요청/일,
+30일 약 1,740요청이다. 실제 기사량 측정값이 아니다. 58요청을 각 1초·128MiB로 가정하면
+약 7.25GB-s/일이며 이것도 측정값이 아니다. 논리 key 처리는 수백 회 수준이나, 값 크기와
+내부 저장 배치 때문에 물리 rows를 요청 수와 같다고 단정하지 않는다. 실제 rows·duration·
+**무료 CPU 10ms 충족 여부**를 승인 후 계정 지표로 확인한다. Worker에서 큰 JSON 재직렬화를
+피하고 DO로 넘기지만, OIDC 검증·본문 처리 CPU는 로컬 테스트로 보증하지 않는다.
 
-Python 3.11 unittest와 Node 내장 test runner로 검증한다. 테스트는 HTTP를 모의 처리하고
-임시 SQLite/로컬 bare Git만 사용한다. 실제 기사 수집·메신저 시험 발송은 없다.
-Cloudflare 실제 계정/DO 런타임 배포, GitHub 운영 권한/branch 규칙, 최신 cache 이관,
-예정 시각 실실행은 승인 후 확인해야 하며 로컬 테스트 통과로 대체하지 않는다.
+Free에서는 한도 초과 시 추가 연산이 **실패**하고 일일 한도는 UTC 00:00에 재설정된다.
+자동 유료 전환을 설정하지 않는다. 원격 체크포인트가 막히면 전송 전에 멈추며 상태 삭제나
+유료 서비스로 우회하지 않는다. 같은 계정의 감시도 실패할 수 있어 경고까지 보장할 수는 없다.
+**이미 유료인 계정에는 배포하지 않고**, Free 여부·기존 공유 사용량을 먼저 확인한다.
+코드는 플랜/결제 설정을 바꾸지 않으며 계정 요금제를 코드만으로 보증할 수도 없다.
+CPU·용량이 부족하면 먼저 중지하고 설계를 조정하며 유료 전환 승인을 추정하지 않는다.
+
+근거: [Workers Free 요청/CPU](https://developers.cloudflare.com/workers/platform/pricing/),
+[DO Free·초과 실패·리셋·할당량](https://developers.cloudflare.com/durable-objects/platform/pricing/),
+[DO 저장 한도](https://developers.cloudflare.com/durable-objects/platform/limits/),
+[Cron 수 한도](https://developers.cloudflare.com/workers/platform/limits/).
+
+## 한 번에 승인받을 최소 항목 — 아직 적용하지 않음
+
+1. **Cloudflare Free Worker + SQLite DO 한 개**, 인증된 workers.dev 상태 URL과 위 최소 상태
+   비공개 저장. 유료 플랜·KV/R2·별도 DB는 사용하지 않는다. 사용자 대시보드 로그인으로
+   Worker/cron/DO binding 배포·secret 입력을 진행하며 별도 장기 Cloudflare API token은
+   만들지 않는다. 자동배포 API 인증을 추가한다면 실제 최소 권한을 다시 확인·승인받는다.
+2. **fine-grained PAT**: `coolpint/obituary-personnel-webapp` 하나, **Actions:write**와 자동
+   Metadata:read만. Contents/Secrets/Admin/Issues 권한 없음. dispatch와 이전 attempt 상태
+   조회에 쓴다. GitHub가 workflow 한 개로 제한하지 않으므로 이 PAT가 대상 repo의 다른
+   Actions 관리도 가능하다는 범위를 알린다. 만료일·교체 담당자를 정한다.
+   [dispatch 최소 권한](https://docs.github.com/rest/actions/workflows#create-a-workflow-dispatch-event).
+3. **동일 Slack webhook 외부 사용**: 사용자가 Worker secret에 직접 보안 입력한다.
+   GitHub Secret을 추출하지 않는다. Telegram 자격정보는 외부로 이동하지 않는다.
+4. **Actions 권한/변수**: 수집 `contents:read`, `actions:read`, `id-token:write`;
+   이관 `contents:read`, `id-token:write`. STATE_ENDPOINT는 일반 변수다. 기존
+   contents:write 제안은 철회한다. OIDC는 정확한 main의 수집/이관 workflow만 신뢰한다.
+5. **후속 main 반영·최신 cache 이관·활성화·예정 회차 관찰**은 별도 승인받는다.
+   지금 단계 승인이 아니다. 수동 실수집·시험 발송·과거 기사 재전송·기존 cron 중단도 보류다.
+   Draft PR은 재시도하지 않는다.
+
+## 승인 후 전환 초안과 현재 검증
+
+처음에는 ENABLED/STATE_API_ENABLED/ALLOW_INITIALIZE 모두 false로 준비한다. 계정·권한과
+OIDC/무료 CPU 연동을 실제 발송 없이 검증할 단계도 승인받는다. 구 코드 run의 실행·대기가
+없도록 전환 창을 정하고 바로 직전 최신 cache/전송 이력을 검토한다. main 반영 승인 후
+STATE_API_ENABLED와 ALLOW_INITIALIZE만 열어 exact cache·무결성을 확인한 최소 이력을 한 번
+이관한다. 이미 상태가 있으면 initialize는 거부한다. 출처/건수 확인 후 ALLOW_INITIALIZE를
+닫고 예약 ENABLED를 켠다. 다음 예정 오전·저녁의 run 생성·상태 완료·신규 전달과 +20분 감시를
+관찰한다. 기사 없는 회차면 전달 검증은 미완료로 적는다. 롤백도 private state를 보존한다.
+
+테스트는 임시 SQLite·모의 HTTP/DO storage·로컬 RSA 키만 사용한다. 서명/claims 거부,
+lease/CAS/한도 실패, 본문 최소화, compact 복원 후 중복 방지, exact-cache 이관,
+pending 복구·uncertain 보류, 지연 회차·heartbeat·미실행 감시를 검사한다. 실제 OIDC 발급,
+Cloudflare Free CPU/DO/PITR, 운영 cache, 실제 발송·예정 시각 실행은 검증하지 않았다.
 
 ```sh
 python -m unittest discover -v
-node --test scheduler/worker.test.mjs
+node --test scheduler/*.test.mjs
 ```

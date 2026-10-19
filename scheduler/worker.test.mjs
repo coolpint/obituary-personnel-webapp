@@ -1,6 +1,6 @@
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { Coordinator, eventSlot, healthProblem } from './worker.mjs';
+import handler, { Coordinator, eventSlot, healthProblem, validateSnapshot } from './worker.mjs';
 
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
@@ -9,7 +9,9 @@ function fixture() {
   const memory = new Map();
   let tail = Promise.resolve();
   const ctx = {
-    storage: { async get(k) { return memory.get(k); }, async put(k, v) { memory.set(k, v); } },
+    storage: { async get(k) { return memory.get(k); },
+      async put(k, v) { if (typeof k === 'object') for (const [key,value] of Object.entries(k)) memory.set(key,value); else memory.set(k, v); },
+      async delete(k) { memory.delete(k); } },
     blockConcurrencyWhile(callback) {
       const result = tail.then(callback);
       tail = result.catch(() => {});
@@ -17,7 +19,7 @@ function fixture() {
     },
   };
   const env = { ENABLED: 'true', GITHUB_REPOSITORY: 'coolpint/obituary-personnel-webapp',
-    GITHUB_WORKFLOW: 'yna-people-alert.yml', STATE_BRANCH: 'alert-state',
+    GITHUB_WORKFLOW: 'yna-people-alert.yml',
     GITHUB_DISPATCH_TOKEN: 'fake-token-never-log', SLACK_WEBHOOK_URL: 'https://example.invalid/slack' };
   return { memory, env, coordinator: new Coordinator(ctx, env) };
 }
@@ -52,6 +54,7 @@ test('concurrent repeated dispatches submit one request to main with the nominal
 });
 test('no-run watchdog warns independently and once across retries', async () => {
   const { coordinator, memory } = fixture(); let warnings = 0;
+  memory.set('state', { revision: 1, snapshot: { slots: [], active: [] } });
   globalThis.fetch = async (url, options) => {
     if (url.includes('api.github.com')) return Response.json({ slots: [] });
     warnings++; assert.match(JSON.parse(options.body).text, /실행 기록 없음/);
@@ -61,14 +64,15 @@ test('no-run watchdog warns independently and once across retries', async () => 
   assert.equal(warnings, 1); assert.equal(memory.get('warning:' + slot), 'sent');
 });
 test('healthy completion does not send a watchdog warning', async () => {
-  const { coordinator } = fixture(); let calls = 0;
+  const { coordinator, memory } = fixture(); let calls = 0;
+  memory.set('state', { revision: 1, snapshot: { slots: [{ slot, status: 'succeeded' }], active: [] } });
   globalThis.fetch = async url => {
     calls++; assert.match(url, /health.json/);
     return Response.json({ slots: [{ slot, status: 'succeeded' }] });
   };
-  await coordinator.watch(slot); assert.equal(calls, 1);
+  await coordinator.watch(slot); assert.equal(calls, 0);
 });
-test('GitHub outage or expired auth still produces an independent Slack warning', async () => {
+test('missing private state warns without depending on GitHub API availability', async () => {
   const { coordinator } = fixture(); let warnings = 0;
   globalThis.fetch = async url => {
     if (url.includes('api.github.com')) return new Response('', { status: 401 });
@@ -105,4 +109,82 @@ test('token is not sent to arbitrary repository configuration', async () => {
   const { coordinator, env } = fixture(); env.GITHUB_REPOSITORY = 'other/repository';
   globalThis.fetch = async () => { assert.fail('must not send token'); };
   await assert.rejects(coordinator.github('anything'), /Repository mismatch/);
+});
+
+const empty = () => ({ version: 1, history: [], active: [], slots: [], notifications: [] });
+const owner = { role: 'collector', run_id: '123', run_attempt: '1' };
+const other = { role: 'collector', run_id: '456', run_attempt: '1' };
+async function init(coordinator, env) {
+  env.ALLOW_INITIALIZE = 'true';
+  return coordinator.stateOperation({ ...owner, role: 'migration' }, {
+    action: 'initialize', snapshot: empty(), source: { cache_key: 'yna-people-alert-data-123', sha256: 'a'.repeat(64) },
+  });
+}
+test('private initialization is gated, one-time, and never overwrites existing history', async () => {
+  const { coordinator, env, memory } = fixture();
+  assert.equal((await coordinator.stateOperation(owner, { action: 'initialize', snapshot: empty() })).status, 409);
+  assert.equal((await init(coordinator, env)).status, 200);
+  assert.equal((await init(coordinator, env)).status, 409);
+  assert.equal(memory.get('state').revision, 1);
+});
+test('missing state fails closed instead of silently starting a new history', async () => {
+  const { coordinator } = fixture();
+  assert.equal((await coordinator.stateOperation(owner, { action: 'acquire' })).status, 409);
+});
+test('lease blocks another active run; release permits it', async () => {
+  const { coordinator, env } = fixture(); await init(coordinator, env);
+  assert.equal((await coordinator.stateOperation(owner, { action: 'acquire' })).status, 200);
+  globalThis.fetch = async () => Response.json({ status: 'in_progress' });
+  assert.equal((await coordinator.stateOperation(other, { action: 'acquire' })).status, 409);
+  assert.equal((await coordinator.stateOperation(other, { action: 'release' })).status, 409);
+  assert.equal((await coordinator.stateOperation(owner, { action: 'release' })).status, 200);
+  assert.equal((await coordinator.stateOperation(other, { action: 'acquire' })).status, 200);
+});
+test('takeover confirms exact previous attempt has completed, never assumes a lease expired', async () => {
+  const { coordinator, env } = fixture(); await init(coordinator, env);
+  await coordinator.stateOperation(owner, { action: 'acquire' });
+  globalThis.fetch = async url => {
+    assert.match(url, /actions\/runs\/123\/attempts\/1$/);
+    return Response.json({ status: 'completed' });
+  };
+  assert.equal((await coordinator.stateOperation({ ...owner, run_attempt: '2' }, { action: 'acquire' })).status, 200);
+  assert.equal((await coordinator.stateOperation(owner, { action: 'checkpoint', revision: 1, snapshot: empty() })).status, 409);
+});
+test('GitHub unavailable means no unsafe lease takeover', async () => {
+  const { coordinator, env } = fixture(); await init(coordinator, env);
+  await coordinator.stateOperation(owner, { action: 'acquire' });
+  globalThis.fetch = async () => { throw new Error('fake-api-outage'); };
+  await assert.rejects(coordinator.stateOperation(other, { action: 'acquire' }));
+});
+test('revision CAS fences stale writers and lost-response retries', async () => {
+  const { coordinator, env, memory } = fixture(); await init(coordinator, env);
+  await coordinator.stateOperation(owner, { action: 'acquire' });
+  const updated = { ...empty(), history: [['a'.repeat(64), 'slack', 'sent']] };
+  const result = await coordinator.stateOperation(owner, { action: 'checkpoint', revision: 1, snapshot: updated });
+  assert.equal((await result.json()).revision, 2);
+  assert.equal((await coordinator.stateOperation(owner, { action: 'checkpoint', revision: 1, snapshot: empty() })).status, 409);
+  assert.equal((await coordinator.stateOperation(owner, { action: 'checkpoint', revision: 2, snapshot: empty() })).status, 409);
+  assert.equal(memory.get('state').snapshot.history.length, 1);
+});
+test('durable write failure cannot return successful checkpoint acknowledgement', async () => {
+  const { coordinator, env, memory } = fixture(); await init(coordinator, env);
+  await coordinator.stateOperation(owner, { action: 'acquire' });
+  coordinator.ctx.storage.put = async () => { throw new Error('quota exhausted'); };
+  await assert.rejects(coordinator.stateOperation(owner, { action: 'checkpoint', revision: 1, snapshot: empty() }));
+  assert.equal(memory.get('state').revision, 1);
+});
+test('payload limits do not evict history or accept extra fields', () => {
+  assert.throws(() => validateSnapshot({ ...empty(), raw_database: 'forbidden' }));
+  assert.throws(() => validateSnapshot({ ...empty(), history: [['x', 'slack', 'sent']] }));
+  assert.throws(() => validateSnapshot({ ...empty(), notifications: Array(121).fill({name:'x',status:'sent'}) }));
+  assert.throws(() => validateSnapshot({ ...empty(), history: Array(14000).fill(['a'.repeat(64), 'slack', 'sent']) }));
+});
+test('public HTTP cannot access state without verified OIDC or when disabled', async () => {
+  const { env } = fixture();
+  env.STATE_API_ENABLED = 'true';
+  assert.equal((await handler.fetch(new Request('https://example/state', {method:'POST',body:'{}'}), env)).status, 403);
+  assert.equal((await handler.fetch(new Request('https://example/health'), env)).status, 404);
+  assert.equal((await handler.fetch(new Request('https://example/scheduled'), env)).status, 404);
+  env.STATE_API_ENABLED = 'false';
+  assert.equal((await handler.fetch(new Request('https://example/state', {method:'POST',body:'{}'}), env)).status, 503);
 });

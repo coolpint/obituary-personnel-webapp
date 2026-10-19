@@ -23,7 +23,8 @@ jobs:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
+      id-token: write
       actions: read
     timeout-minutes: 15
     env:
@@ -35,8 +36,8 @@ jobs:
       INCLUDE_SUMMARY_IN_ALERT: ${{ vars.INCLUDE_SUMMARY_IN_ALERT || 'true' }}
       ALERT_SUMMARY_MAX_CHARS: ${{ vars.ALERT_SUMMARY_MAX_CHARS || '500' }}
       OUTLET_REFRESH_HOURS: "12"
-      DB_PATH: ./state/data/yna_people_alert.db
-      OUTLET_CACHE_PATH: ./state/data/outlets_cache.json
+      DB_PATH: ./data/yna_people_alert.db
+      OUTLET_CACHE_PATH: ./data/outlets_cache.json
       SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
       SLACK_MENTION: ${{ vars.SLACK_MENTION || '' }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -53,12 +54,6 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Checkout durable state (missing state fails closed)
-        uses: actions/checkout@v4
-        with:
-          ref: alert-state
-          path: state
-
       - name: Read immutable run creation time
         env:
           GH_TOKEN: ${{ github.token }}
@@ -66,7 +61,7 @@ jobs:
 
       - name: Run slot with durable checkpoints
         env:
-          STATE_CHECKOUT: ./state
+          STATE_ENDPOINT: ${{ vars.STATE_ENDPOINT }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: python -m yna_people_alert.scheduled
 

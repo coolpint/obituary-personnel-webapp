@@ -79,7 +79,7 @@ yna_people_alert/
 
 독립 예약 실행기·회차 보호 변경의 구조와 **운영 전 승인/이관 절차**는
 [reliable-scheduling.md](docs/reliable-scheduling.md)를 먼저 참고하세요.
-상태 branch 이관 전 새 워크플로로 실제 수집을 실행하지 마세요.
+비공개 상태 이관과 권한 승인을 마치기 전 새 워크플로로 실제 수집을 실행하지 마세요.
 
 워크플로 파일은 [yna-people-alert.yml](/Users/air/codes/orbituary/.github/workflows/yna-people-alert.yml)에 포함되어 있습니다.
 

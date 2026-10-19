@@ -1,4 +1,32 @@
-// No public HTTP endpoint. Only scheduled events reach the named coordinator.
+import { verifyOidc } from './auth.mjs';
+
+export function validateSnapshot(value) {
+  if (!value || value.version !== 1 ||
+      Object.keys(value).sort().join(',') !== 'active,history,notifications,slots,version' ||
+      !['history','active','slots','notifications'].every(key => Array.isArray(value[key])) ||
+      value.slots.length > 60 || value.notifications.length > 120 ||
+      new TextEncoder().encode(JSON.stringify(value)).length > 1024 * 1024) throw new Error('Invalid state');
+  for (const row of value.history) {
+    if (!Array.isArray(row) || row.length !== 3 || !/^[a-f0-9]{64}$/.test(row[0]) ||
+        !['slack','telegram','console'].includes(row[1]) || !['sent','skipped_legacy'].includes(row[2])) throw new Error('Invalid history');
+  }
+  for (const row of value.active) {
+    if (!row.item || !row.classification || !['slack','telegram','console'].includes(row.channel) ||
+        !['pending','failed','in_flight','uncertain'].includes(row.status) ||
+        Object.keys(row).sort().join(',') !== 'channel,classification,error,item,sent_at,status' ||
+        Object.keys(row.item).sort().join(',') !== 'guid,link,published_at,summary,title' ||
+        Object.keys(row.classification).sort().join(',') !== 'category,is_media_related,matched_category_keywords,matched_outlets,matched_roles,media_score') throw new Error('Invalid active state');
+  }
+  for (const row of value.slots) {
+    if (Object.keys(row).sort().join(',') !== 'completed_at,error,run_id,slot,started_at,status' ||
+        !['running','failed','succeeded'].includes(row.status)) throw new Error('Invalid slot state');
+  }
+  for (const row of value.notifications) {
+    if (Object.keys(row).sort().join(',') !== 'name,status' ||
+        !['in_flight','sent'].includes(row.status)) throw new Error('Invalid notification state');
+  }
+  return value;
+}
 export function eventSlot(time, cron) {
   if (!["7 1,9 * * *", "27 1,9 * * *"].includes(cron)) throw new Error("Unknown cron");
   const date = new Date(time);
@@ -25,6 +53,13 @@ export class Coordinator {
   // event ordering alone would allow duplicate requests during those awaits.
   async fetch(request) {
     return this.ctx.blockConcurrencyWhile(async () => {
+      if (new URL(request.url).pathname === '/state') {
+        // Only the authenticated outer Worker can call this private binding.
+        const claims = { run_id: request.headers.get('X-Run-ID'), run_attempt: request.headers.get('X-Run-Attempt'),
+          role: request.headers.get('X-Role') };
+        const operation = await request.json();
+        return this.stateOperation(claims, operation);
+      }
       const { time, cron } = await request.json();
       if (this.env.ENABLED !== "true") return new Response("disabled");
       const slot = eventSlot(time, cron);
@@ -32,6 +67,46 @@ export class Coordinator {
       else await this.dispatch(slot);
       return new Response("ok");
     });
+  }
+
+  async stateOperation(claims, operation) {
+    const reply = (value, status = 200) => Response.json(value, { status, headers: { 'Cache-Control': 'no-store' } });
+    const current = await this.ctx.storage.get('state');
+    const owner = `${claims.run_id}:${claims.run_attempt}`;
+    if (operation.action === 'initialize') {
+      if (claims.role !== 'migration' || this.env.ALLOW_INITIALIZE !== 'true' || current) return reply({}, 409);
+      if (!operation.source || Object.keys(operation.source).sort().join(',') !== 'cache_key,sha256' ||
+          !/^yna-people-alert-data-\d+$/.test(operation.source.cache_key) || !/^[a-f0-9]{64}$/.test(operation.source.sha256)) return reply({}, 400);
+      const initial = { revision: 1, snapshot: validateSnapshot(operation.snapshot) };
+      await this.ctx.storage.put({ state: initial, source: operation.source });
+      return reply({ revision: 1 });
+    }
+    if (claims.role !== 'collector' || !current) return reply({}, 409);
+    let lease = await this.ctx.storage.get('lease');
+    if (operation.action === 'acquire') {
+      if (lease && lease.owner !== owner) {
+        // Never expire a lease based on wall time: a paused runner could still
+        // send after takeover. Confirm the prior Actions run has ended first.
+        const response = await this.github(`actions/runs/${lease.run_id}/attempts/${lease.run_attempt}`);
+        if ((await response.json()).status !== 'completed') return reply({}, 409);
+        lease = null;
+      }
+      await this.ctx.storage.put('lease', { owner, run_id: claims.run_id, run_attempt: claims.run_attempt });
+      return reply(current);
+    }
+    if (!lease || lease.owner !== owner) return reply({}, 409);
+    if (operation.action === 'release') {
+      await this.ctx.storage.delete('lease');
+      return reply({ released: true });
+    }
+    if (operation.action === 'checkpoint' && Number.isInteger(operation.revision) && operation.revision === current.revision) {
+      const next = { revision: current.revision + 1, snapshot: validateSnapshot(operation.snapshot) };
+      const history = new Map(next.snapshot.history.map(row => [row[0] + ':' + row[1], row[2]]));
+      if (current.snapshot.history.some(row => history.get(row[0] + ':' + row[1]) !== row[2])) return reply({}, 409);
+      await this.ctx.storage.put('state', next);
+      return reply({ revision: next.revision });
+    }
+    return reply({}, 409);
   }
 
   async github(path, options = {}) {
@@ -71,12 +146,11 @@ export class Coordinator {
   async watch(slot) {
     let problem;
     try {
-      const response = await this.github(`contents/health.json?ref=${encodeURIComponent(this.env.STATE_BRANCH)}`, {
-        headers: { Accept: "application/vnd.github.raw+json" },
-      });
-      problem = healthProblem(await response.json(), slot);
+      const state = await this.ctx.storage.get('state');
+      const health = state?.snapshot;
+      problem = healthProblem(health && { slots: health.slots, delivery_problems: health.active.length }, slot);
     } catch {
-      problem = "완료 기록 조회 실패 (GitHub 장애·인증·상태 저장 확인 필요)";
+      problem = "비공개 완료 기록 조회 실패 (상태 저장 확인 필요)";
     }
     if (problem) await this.warn(slot, problem);
     await this.ctx.storage.put("watch:" + slot, { problem, checked: true });
@@ -104,6 +178,25 @@ export class Coordinator {
 }
 
 export default {
+  async fetch(request, env) {
+    if (new URL(request.url).pathname !== '/state' || request.method !== 'POST') return new Response('', { status: 404 });
+    if (env.STATE_API_ENABLED !== 'true') return new Response('', { status: 503 });
+    try {
+      if (Number(request.headers.get('Content-Length') || 0) > 1100000) return new Response('', { status: 413 });
+      const auth = request.headers.get('Authorization') || '';
+      if (!auth.startsWith('Bearer ')) return new Response('', { status: 403 });
+      const claims = await verifyOidc(auth.slice(7), env.STATE_ENDPOINT);
+      const body = await request.arrayBuffer();
+      if (body.byteLength > 1100000) return new Response('', { status: 413 });
+      const id = env.COORDINATOR.idFromName('yna-scheduler-v1');
+      return await env.COORDINATOR.get(id).fetch(new Request('https://internal/state', {
+        method: 'POST', body,
+        headers: { 'X-Run-ID': claims.run_id, 'X-Run-Attempt': claims.run_attempt, 'X-Role': claims.role },
+      }));
+    } catch {
+      return new Response('', { status: 403, headers: { 'Cache-Control': 'no-store' } });
+    }
+  },
   async scheduled(controller, env, ctx) {
     const id = env.COORDINATOR.idFromName("yna-scheduler-v1");
     ctx.waitUntil((async () => {

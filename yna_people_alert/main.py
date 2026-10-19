@@ -109,10 +109,16 @@ def send_pending(settings: Settings, store: Store, notifiers) -> None:
             # log only the exception type, never its message or traceback.
             error_type = type(exc).__name__
             store.mark_alert(item_id, channel, "uncertain" if store.checkpoint else "failed", error=error_type)
-            logger.error("Alert failed guid=%s channel=%s error=%s", item.guid, channel, error_type)
+            if store.checkpoint:
+                logger.error("Alert failed channel=%s error=%s", channel, error_type)
+            else:
+                logger.error("Alert failed guid=%s channel=%s error=%s", item.guid, channel, error_type)
         else:
             store.mark_alert(item_id, channel, "sent")
-            logger.info("Alert sent guid=%s channel=%s", item.guid, channel)
+            if store.checkpoint:
+                logger.info("Alert sent channel=%s", channel)
+            else:
+                logger.info("Alert sent guid=%s channel=%s", item.guid, channel)
         store.flush()
 
 

@@ -9,7 +9,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from tests.test_alert_retries import ITEM, notifier
-from yna_people_alert.scheduled import GitCheckpoint, exclusive_lock, resolve_slot, run_slot
+from yna_people_alert.scheduled import exclusive_lock, resolve_slot, run_slot
 from yna_people_alert.settings import Settings
 from yna_people_alert.store import Store
 
@@ -193,73 +193,3 @@ class DurableRunTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             self.run_slot(channels=[slack])
         slack.send.assert_called_once()
-
-
-class GitCheckpointTests(unittest.TestCase):
-    def git(self, path, *args):
-        return subprocess.run(["git", "-C", str(path), *args], check=True, capture_output=True, text=True).stdout
-
-    def test_published_db_and_health_survive_fresh_checkout(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            remote, checkout = root / "remote.git", root / "state"
-            subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
-            subprocess.run(["git", "init", "-b", "alert-state", str(checkout)], check=True, capture_output=True)
-            self.git(checkout, "remote", "add", "origin", str(remote))
-            db = checkout / "data/yna_people_alert.db"
-            store = Store(db)
-            store.close()
-            publisher = GitCheckpoint(checkout, db)
-            store = Store(db, checkpoint=publisher)
-            store.claim_slot(AM, "123")
-            store.finish_slot(AM, "succeeded")
-            store.close()
-            clone = root / "restored"
-            subprocess.run(["git", "clone", "-b", "alert-state", str(remote), str(clone)], check=True, capture_output=True)
-            self.assertEqual(json.loads((clone / "health.json").read_text())["slots"][0]["status"], "succeeded")
-            restored = Store(clone / "data/yna_people_alert.db")
-            self.assertFalse(restored.claim_slot(AM, "456"))
-            restored.close()
-
-    def test_missing_history_and_wrong_branch_rejected(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            subprocess.run(["git", "init", "-b", "main", str(root)], check=True, capture_output=True)
-            with self.assertRaises(ValueError):
-                GitCheckpoint(root, root / "data/yna_people_alert.db")
-            self.git(root, "symbolic-ref", "HEAD", "refs/heads/alert-state")
-            with self.assertRaises(ValueError):
-                GitCheckpoint(root, root / "data/yna_people_alert.db")
-
-
-class MigrationTests(unittest.TestCase):
-    def test_exact_cache_migrates_history_without_collecting_and_cannot_overwrite(self):
-        script = Path(__file__).resolve().parents[1] / "scripts/bootstrap_state.py"
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            remote, checkout = root / "remote.git", root / "checkout"
-            subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
-            subprocess.run(["git", "init", "-b", "main", str(checkout)], check=True, capture_output=True)
-            subprocess.run(["git", "-C", str(checkout), "remote", "add", "origin", str(remote)], check=True, capture_output=True)
-            # Seed a tracked file and ignored cache, as actions/checkout does.
-            (checkout / ".gitignore").write_text("data/\n")
-            subprocess.run(["git", "-C", str(checkout), "add", ".gitignore"], check=True, capture_output=True)
-            subprocess.run(["git", "-C", str(checkout), "-c", "user.name=test", "-c", "user.email=test@example.invalid",
-                            "commit", "-m", "initial"], check=True, capture_output=True)
-            store = Store(checkout / "data/yna_people_alert.db")
-            item_id = store.upsert_item(ITEM)
-            store.mark_alert(item_id, "slack", "sent")
-            store.close()
-            env = {**os.environ, "APPROVED_CACHE_KEY": "reviewed", "MATCHED_CACHE_KEY": "wrong"}
-            rejected = subprocess.run([os.sys.executable, str(script)], cwd=checkout, env=env, capture_output=True)
-            self.assertEqual(rejected.returncode, 1)
-            env["MATCHED_CACHE_KEY"] = "reviewed"
-            migrated = subprocess.run([os.sys.executable, str(script)], cwd=checkout, env=env, capture_output=True)
-            self.assertEqual(migrated.returncode, 0, migrated.stdout)
-            with sqlite3.connect(checkout / "data/yna_people_alert.db") as conn:
-                self.assertEqual(conn.execute("SELECT status FROM alerts").fetchone()[0], "sent")
-            health = json.loads((checkout / "health.json").read_text())
-            self.assertEqual(health["source_cache_key"], "reviewed")
-            self.assertEqual(len(health["source_db_sha256"]), 64)
-            repeated = subprocess.run([os.sys.executable, str(script)], cwd=checkout, env=env, capture_output=True)
-            self.assertEqual(repeated.returncode, 1)

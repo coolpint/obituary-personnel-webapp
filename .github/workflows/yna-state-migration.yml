@@ -17,12 +17,14 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
-      contents: write
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+      - run: pip install -r requirements.txt
       - uses: actions/cache/restore@v4
         id: cache
         with:
@@ -31,6 +33,7 @@ jobs:
           fail-on-cache-miss: true
       - name: Seed durable state without collecting or sending alerts
         env:
+          STATE_ENDPOINT: ${{ vars.STATE_ENDPOINT }}
           APPROVED_CACHE_KEY: ${{ inputs.cache_key }}
           MATCHED_CACHE_KEY: ${{ steps.cache.outputs.cache-matched-key }}
-        run: python scripts/bootstrap_state.py
+        run: python -m yna_people_alert.bootstrap_private

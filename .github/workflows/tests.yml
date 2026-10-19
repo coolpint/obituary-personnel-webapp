@@ -1,7 +1,6 @@
 name: Isolated tests
 on:
   push:
-    branches-ignore: [alert-state]
   pull_request:
 permissions:
   contents: read
@@ -18,4 +17,4 @@ jobs:
           node-version: '22'
       - run: pip install -r requirements.txt
       - run: python -m unittest discover -v
-      - run: node --test scheduler/worker.test.mjs
+      - run: node --test scheduler/*.test.mjs

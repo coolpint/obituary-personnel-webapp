@@ -8,13 +8,12 @@ import json
 import logging
 import os
 from pathlib import Path
-import sqlite3
-import subprocess
 
 from .main import build_notifiers, run_once
 from .outlet_dictionary import OutletDictionary
 from .settings import Settings
 from .store import Store
+from .private_state import PrivateCheckpoint
 
 KST = timezone(timedelta(hours=9))
 UTC = timezone.utc
@@ -55,57 +54,6 @@ def exclusive_lock(path: Path):
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-class GitCheckpoint:
-    """Only the dedicated state checkout can be committed/pushed. No token reads."""
-    def __init__(self, root: Path, db_path: Path):
-        self.root = root.resolve()
-        self.db_path = db_path.resolve()
-        if self.db_path != self.root / "data/yna_people_alert.db":
-            raise ValueError("Unexpected durable DB path")
-        if self.git("branch", "--show-current").strip() != "alert-state":
-            raise ValueError("State must be on alert-state")
-        # Never bootstrap from an empty DB during a production collection.
-        if not self.db_path.is_file():
-            raise ValueError("State migration required; refusing empty history")
-        with sqlite3.connect(self.db_path) as conn:
-            if conn.execute("PRAGMA integrity_check").fetchone()[0] != "ok":
-                raise ValueError("Invalid state DB")
-            conn.execute("SELECT count(*) FROM alerts").fetchone()
-
-    def git(self, *args: str) -> str:
-        result = subprocess.run(
-            ["git", "-C", str(self.root), *args], capture_output=True, text=True,
-            timeout=60, check=False,
-        )
-        if result.returncode:
-            # Never log stderr: Git remote errors can contain credentials.
-            raise RuntimeError("State Git operation failed")
-        return result.stdout
-
-    def __call__(self) -> None:
-        with sqlite3.connect(self.db_path) as conn:
-            conn.row_factory = sqlite3.Row
-            slots = [dict(row) for row in conn.execute(
-                "SELECT * FROM collection_slots ORDER BY slot DESC LIMIT 60"
-            )]
-            problems = conn.execute(
-                "SELECT count(*) FROM alerts WHERE status IN ('pending','failed','in_flight','uncertain')"
-            ).fetchone()[0]
-        (self.root / "health.json").write_text(json.dumps({
-            "slots": slots, "delivery_problems": problems,
-            "updated_at": datetime.now(UTC).isoformat(),
-        }, indent=2) + "\n")
-        self.git("add", "--", "data/yna_people_alert.db", "health.json")
-        if (self.root / "data/outlets_cache.json").is_file():
-            self.git("add", "--", "data/outlets_cache.json")
-        if self.git("diff", "--cached", "--name-only").strip():
-            self.git("-c", "user.name=YNA state", "-c", "user.email=yna-state@users.noreply.github.com",
-                     "commit", "-m", "Checkpoint alert state [skip ci]")
-        # A push is required even with no changes, including recovery after an
-        # uncertain prior push. No force / rebase: divergence fails closed.
-        self.git("push", "origin", "HEAD:refs/heads/alert-state")
-
-
 def evening_heartbeat(store: Store, slot: str, notifiers, run_url: str) -> None:
     if "T18:07" not in slot:
         return
@@ -133,6 +81,8 @@ def evening_heartbeat(store: Store, slot: str, notifiers, run_url: str) -> None:
 
 def run_slot(slot: str, run_id: str, settings: Settings, store: Store, dictionary, notifiers,
              run_url: str = "") -> bool:
+    if not any(n.channel_name != "console" for n in notifiers):
+        raise RuntimeError("Durable collection requires configured delivery channels")
     if not store.claim_slot(slot, run_id):
         logging.info("Already completed slot=%s", slot)
         return False
@@ -157,8 +107,8 @@ def main() -> int:
         # Must acquire before opening SQLite. Every local DB user in production
         # must use this entry point; remote isolation is Actions concurrency.
         with exclusive_lock(settings.db_path.with_suffix(".lock")):
-            checkpoint = GitCheckpoint(Path(os.environ["STATE_CHECKOUT"]), settings.db_path)
-            store = Store(settings.db_path, checkpoint=checkpoint)
+            checkpoint = PrivateCheckpoint(os.environ["STATE_ENDPOINT"], os.environ["STATE_ENDPOINT"])
+            store = checkpoint.open(settings.db_path)
             try:
                 dictionary = OutletDictionary(
                     settings.outlet_cache_path, settings.office_list_url, settings.daum_cplist_url,
@@ -168,6 +118,7 @@ def main() -> int:
                          build_notifiers(settings), os.environ.get("RUN_URL", ""))
             finally:
                 store.close()
+                checkpoint.release()
     except Exception as exc:
         logging.error("Scheduled collection failed: %s", type(exc).__name__)
         return 1

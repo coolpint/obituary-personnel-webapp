@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 from pathlib import Path
 from typing import Callable, Sequence
@@ -75,6 +76,13 @@ class Store:
             CREATE TABLE IF NOT EXISTS system_notifications (
                 name TEXT PRIMARY KEY,
                 status TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS delivery_history (
+                guid_hash TEXT NOT NULL,
+                channel TEXT NOT NULL,
+                status TEXT NOT NULL,
+                PRIMARY KEY (guid_hash, channel)
             );
             """
         )
@@ -154,6 +162,15 @@ class Store:
             "SELECT 1 FROM alerts WHERE item_id = ? AND channel = ? AND status = 'sent' LIMIT 1",
             (item_id, channel),
         ).fetchone()
+        if row is not None:
+            return True
+        item = self._conn.execute("SELECT guid FROM items WHERE id=?", (item_id,)).fetchone()
+        if item is None:
+            return False
+        row = self._conn.execute(
+            "SELECT 1 FROM delivery_history WHERE guid_hash=? AND channel=? AND status='sent'",
+            (hashlib.sha256(item["guid"].encode()).hexdigest(), channel),
+        ).fetchone()
         return row is not None
 
     def has_alert_history(self, item_id: int, channels: Sequence[str]) -> bool:
@@ -163,6 +180,13 @@ class Store:
         row = self._conn.execute(
             f"SELECT 1 FROM alerts WHERE item_id = ? AND channel IN ({placeholders}) LIMIT 1",
             (item_id, *channels),
+        ).fetchone()
+        if row is not None:
+            return True
+        guid = self._conn.execute("SELECT guid FROM items WHERE id=?", (item_id,)).fetchone()[0]
+        row = self._conn.execute(
+            f"SELECT 1 FROM delivery_history WHERE guid_hash=? AND channel IN ({placeholders}) LIMIT 1",
+            (hashlib.sha256(guid.encode()).hexdigest(), *channels),
         ).fetchone()
         return row is not None
 
