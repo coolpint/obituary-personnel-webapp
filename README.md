@@ -77,6 +77,9 @@ yna_people_alert/
 
 ## GitHub Actions 스케줄 실행
 
+운영 GitHub Actions 알림은 Slack 전용입니다. Telegram 자격정보는 워크플로에 전달하지
+않으며, 기존 Telegram 전송·미전송 이력은 보존하되 발송과 미전송 재시도는 하지 않습니다.
+
 워크플로 파일은 [yna-people-alert.yml](/Users/air/codes/orbituary/.github/workflows/yna-people-alert.yml)에 포함되어 있습니다.
 
 - 실행 시각(한국시간 KST): 매일 오전 10시 7분, 오후 6시 7분
