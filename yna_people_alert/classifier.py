@@ -171,7 +171,7 @@ def classify_item(text: str, outlets: Sequence[str] | Set[str], threshold: int) 
         | set(_find_outlet_hints_from_parentheses(outlet_text))
     )
     role_hits = sorted(
-        set(_find_keywords(cleaned_text, MEDIA_ROLE_KEYWORDS))
+        set(_find_keywords(outlet_text, MEDIA_ROLE_KEYWORDS))
         | set(_find_context_roles(normalized_text, outlet_hits))
     )
 

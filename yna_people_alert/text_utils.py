@@ -14,6 +14,10 @@ BYLINE_PATTERNS = [
 SOURCE_MARKER_PATTERNS = [
     # Wire/source markers like "(서울=연합뉴스)" or "(도쿄=연합뉴스TV)"
     re.compile(r"\([^()\n]{1,20}=[^()\n]{1,40}\)"),
+    # RSS descriptions can end inside a source marker: "(창원=연합뉴스...".
+    # Require the source-shaped "(location=" prefix and stop at the line end,
+    # so real affiliations such as "(연합뉴스 기자)" and later lines survive.
+    re.compile(r"\([^()\n]{1,20}=[^()\n]{1,40}(?=\n|$)"),
     re.compile(r"\((?:끝|종합|그래픽)\)"),
 ]
 
